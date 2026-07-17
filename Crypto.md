@@ -1,0 +1,39 @@
+
+├── .env
+├── config.py
+├── core
+│   ├── __init__.py
+│   ├── database.py
+│   ├── database_sync.py
+│   ├── exchange.py
+│   ├── executor.py
+│   ├── instrument_cache.py
+│   ├── logger.py
+│   ├── notifier.py
+│   ├── position_manager.py
+│   ├── risk_manager.py
+│   └── tp_manager.py
+├── data
+│   ├── bot_memory 2.db-wal
+│   ├── bot_memory.db
+│   └── trade_history.json
+├── engine
+│   ├── __init__.py
+│   ├── filters.py
+│   ├── indicators.py
+│   ├── liquidity.py
+│   ├── scoring.py
+│   ├── smc
+│   │   ├── __init__.py
+│   │   ├── analyzer.py
+│   │   ├── liquidity_engine.py
+│   │   ├── poi_engine.py
+│   │   ├── smc_utils.py
+│   │   └── structure_engine.py
+│   ├── smc_analyzer.py
+│   ├── stats_analyzer.py
+│   └── trend_engine.py
+├── logs
+│   └── bot_execution.log
+├── main.py
+├── requirements.txt
