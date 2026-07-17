@@ -40,6 +40,7 @@
 │   ├── run_bybit_demo_lifecycle.py
 │   └── run_paper_lifecycle.py
 ├── tests
+│   ├── test_bybit_demo_lifecycle.py
 │   ├── test_execution_safety.py
 │   └── test_paper_lifecycle.py
 
@@ -47,8 +48,11 @@ Safe lifecycle checks:
 
 ```bash
 python3 scripts/run_paper_lifecycle.py --db /tmp/cryptobot_paper_lifecycle.db --reset-db
-.venv/bin/python scripts/run_bybit_demo_lifecycle.py --symbol XRPUSDT --max-notional 15
+.venv/bin/python scripts/run_bybit_demo_lifecycle.py --symbol XRPUSDT --max-notional 15 --wait 20
 ```
 
 `run_bybit_demo_lifecycle.py` fails closed unless `BYBIT_DEMO=true` or
-`BYBIT_TESTNET=true`.
+`BYBIT_TESTNET=true`. It covers safe create/amend/cancel, expected retCode
+failures, partial reduce-only close, reduce-only TP, stop-loss set/clear,
+restart recovery sync, and a best-effort partial-fill probe that always cleans
+up its own orders/positions.

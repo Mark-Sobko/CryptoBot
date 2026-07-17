@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import tempfile
 import time
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from pathlib import Path
@@ -22,6 +23,9 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 import config
+from core.database import TradeDatabase
+from core.database_sync import DatabaseSync
+from core.exchange import ExchangeManager
 
 
 CATEGORY = "linear"
@@ -78,6 +82,29 @@ def try_place_order(session: HTTP, **kwargs: Any) -> tuple[bool, dict[str, Any] 
         return False, res
 
     return True, res
+
+
+def try_api_call(func: Callable[..., dict[str, Any]], **kwargs: Any) -> tuple[bool, dict[str, Any] | str]:
+    try:
+        res = func(**kwargs)
+    except Exception as exc:
+        return False, str(exc)
+
+    if not isinstance(res, dict) or res.get("retCode") != 0:
+        return False, res
+
+    return True, res
+
+
+def summarize_failure(result: dict[str, Any] | str) -> dict[str, Any]:
+    if isinstance(result, dict):
+        return {
+            "retCode": result.get("retCode"),
+            "retMsg": str(result.get("retMsg", ""))[:160],
+        }
+
+    first_line = str(result).splitlines()[0] if str(result) else ""
+    return {"exception": first_line[:220]}
 
 
 def get_instrument(session: HTTP, symbol: str) -> dict[str, Decimal]:
@@ -184,11 +211,21 @@ def close_open_positions(session: HTTP, symbol: str) -> int:
     return closed
 
 
+def assert_symbol_flat(session: HTTP, symbol: str) -> None:
+    positions = get_positions(session, symbol)
+    orders = get_open_orders(session, symbol)
+    if positions or orders:
+        raise LifecycleError(
+            f"{symbol}: expected flat state, positions={len(positions)}, open_orders={len(orders)}"
+        )
+
+
 def choose_qty(
     last_price: Decimal,
     min_order_price: Decimal,
     instrument: dict[str, Decimal],
     max_notional: Decimal,
+    require_partial_close: bool = True,
 ) -> Decimal:
     min_qty = instrument["min_qty"]
     qty_step = instrument["qty_step"]
@@ -198,6 +235,10 @@ def choose_qty(
     notional_basis = min(last_price, min_order_price)
     if min_notional > 0 and qty * notional_basis < min_notional:
         qty = (min_notional / notional_basis) * Decimal("1.05")
+
+    if require_partial_close and min_notional > 0:
+        qty_for_two_valid_halves = (min_notional * Decimal("2.10")) / last_price
+        qty = max(qty, qty_for_two_valid_halves)
 
     qty = round_step(qty, qty_step, "up")
     notional = qty * last_price
@@ -217,6 +258,7 @@ def place_far_limit_with_mode_fallback(
     qty: Decimal,
     price: Decimal,
     order_link_id: str,
+    time_in_force: str = "PostOnly",
 ) -> tuple[int, str]:
     base = {
         "category": CATEGORY,
@@ -225,7 +267,7 @@ def place_far_limit_with_mode_fallback(
         "orderType": "Limit",
         "qty": decimal_to_str(qty),
         "price": decimal_to_str(price),
-        "timeInForce": "PostOnly",
+        "timeInForce": time_in_force,
         "orderLinkId": order_link_id,
     }
 
@@ -242,11 +284,268 @@ def place_far_limit_with_mode_fallback(
     raise LifecycleError(f"failed to place limit order in one-way or hedge mode: {attempts}")
 
 
+def find_order(session: HTTP, symbol: str, order_id: str) -> dict[str, Any] | None:
+    for order in get_open_orders(session, symbol):
+        if str(order.get("orderId", "")) == order_id:
+            return order
+    return None
+
+
+def get_top_ask(session: HTTP, symbol: str) -> tuple[Decimal, Decimal]:
+    res = api_call(session.get_orderbook, category=CATEGORY, symbol=symbol, limit=1)
+    asks = res.get("result", {}).get("a", [])
+    if not asks:
+        raise LifecycleError(f"{symbol}: orderbook ask side is empty")
+    ask = asks[0]
+    return decimal_from(ask[0]), decimal_from(ask[1])
+
+
+def run_partial_fill_probe(
+    session: HTTP,
+    *,
+    symbols: list[str],
+    max_notional: Decimal,
+    prefix: str,
+    wait_s: float,
+) -> dict[str, Any]:
+    skipped: list[dict[str, Any]] = []
+    attempts: list[dict[str, Any]] = []
+
+    for symbol in symbols:
+        symbol = symbol.upper()
+        try:
+            if get_positions(session, symbol) or get_open_orders(session, symbol):
+                skipped.append({"symbol": symbol, "reason": "not_flat"})
+                continue
+
+            instrument = get_instrument(session, symbol)
+            ask_price, ask_size = get_top_ask(session, symbol)
+            qty_step = instrument["qty_step"]
+            min_notional = instrument["min_notional"]
+            min_qty = instrument["min_qty"]
+
+            target_qty = round_step(max(ask_size + qty_step, ask_size * Decimal("1.20")), qty_step, "up")
+            if target_qty < min_qty:
+                target_qty = min_qty
+
+            if min_notional > 0 and target_qty * ask_price < min_notional:
+                target_qty = round_step((min_notional / ask_price) * Decimal("1.05"), qty_step, "up")
+
+            notional = target_qty * ask_price
+            ask_notional = ask_size * ask_price
+            if notional > max_notional:
+                skipped.append(
+                    {
+                        "symbol": symbol,
+                        "reason": "top_ask_too_large",
+                        "ask_notional": decimal_to_str(ask_notional),
+                        "required_notional": decimal_to_str(notional),
+                    }
+                )
+                continue
+
+            order_link_id = f"{prefix}-pf-{symbol}"[:36]
+            position_idx, order_id = place_far_limit_with_mode_fallback(
+                session,
+                symbol=symbol,
+                qty=target_qty,
+                price=ask_price,
+                order_link_id=order_link_id,
+                time_in_force="GTC",
+            )
+
+            time.sleep(min(max(wait_s, 1.0), 3.0))
+            open_order = find_order(session, symbol, order_id)
+            positions = get_positions(session, symbol)
+            filled_qty = decimal_from(positions[0].get("size")) if positions else Decimal("0")
+            remaining_qty = decimal_from(open_order.get("leavesQty")) if open_order else Decimal("0")
+            order_status = str(open_order.get("orderStatus", "FILLED_OR_CLOSED")) if open_order else "FILLED_OR_CLOSED"
+            partial_observed = filled_qty > 0 and remaining_qty > 0
+
+            if open_order:
+                api_call(session.cancel_order, category=CATEGORY, symbol=symbol, orderId=order_id)
+                time.sleep(0.5)
+
+            if filled_qty > 0:
+                close_open_positions(session, symbol)
+                wait_for_position(session, symbol, want_open=False, timeout_s=wait_s)
+
+            assert_symbol_flat(session, symbol)
+            attempt = {
+                "name": "partial_fill_probe",
+                "symbol": symbol,
+                "position_idx": position_idx,
+                "order_id": order_id,
+                "ask_price": decimal_to_str(ask_price),
+                "top_ask_qty": decimal_to_str(ask_size),
+                "order_qty": decimal_to_str(target_qty),
+                "filled_qty": decimal_to_str(filled_qty),
+                "remaining_qty": decimal_to_str(remaining_qty),
+                "order_status": order_status,
+                "partial_observed": partial_observed,
+                "skipped_before": list(skipped),
+            }
+            attempts.append(attempt)
+
+            if partial_observed:
+                return attempt
+
+        except Exception as exc:
+            try:
+                cancel_prefix_orders(session, symbol, f"{prefix}-pf")
+                close_open_positions(session, symbol)
+            except Exception:
+                pass
+            skipped.append({"symbol": symbol, "reason": "probe_error", "error": str(exc)[:180]})
+
+    return {
+        "name": "partial_fill_probe",
+        "partial_observed": False,
+        "attempts": attempts,
+        "skipped": skipped,
+    }
+
+
+def run_retcode_matrix(
+    session: HTTP,
+    *,
+    symbol: str,
+    qty: Decimal,
+    price: Decimal,
+    position_idx: int,
+    prefix: str,
+) -> list[dict[str, Any]]:
+    wrong_idx = 0 if position_idx != 0 else 1
+    cases: list[dict[str, Any]] = []
+
+    ok, result = try_place_order(
+        session,
+        category=CATEGORY,
+        symbol=symbol,
+        side="Buy",
+        orderType="Limit",
+        qty=decimal_to_str(qty),
+        price=decimal_to_str(price),
+        timeInForce="PostOnly",
+        positionIdx=wrong_idx,
+        orderLinkId=f"{prefix}-ret-wrong-idx",
+    )
+    if ok:
+        order_id = str(result.get("result", {}).get("orderId", ""))
+        if order_id:
+            api_call(session.cancel_order, category=CATEGORY, symbol=symbol, orderId=order_id)
+        raise LifecycleError("retCode matrix expected wrong positionIdx to fail, but it placed an order")
+
+    cases.append(
+        {
+            "name": "wrong_position_idx",
+            "expected_failure": True,
+            **summarize_failure(result),
+        }
+    )
+
+    ok, result = try_place_order(
+        session,
+        category=CATEGORY,
+        symbol=symbol,
+        side="Buy",
+        orderType="Limit",
+        qty="0",
+        price=decimal_to_str(price),
+        timeInForce="PostOnly",
+        positionIdx=position_idx,
+        orderLinkId=f"{prefix}-ret-zero-qty",
+    )
+    if ok:
+        order_id = str(result.get("result", {}).get("orderId", ""))
+        if order_id:
+            api_call(session.cancel_order, category=CATEGORY, symbol=symbol, orderId=order_id)
+        raise LifecycleError("retCode matrix expected zero qty to fail, but it placed an order")
+
+    cases.append(
+        {
+            "name": "zero_qty",
+            "expected_failure": True,
+            **summarize_failure(result),
+        }
+    )
+
+    ok, result = try_api_call(
+        session.cancel_order,
+        category=CATEGORY,
+        symbol=symbol,
+        orderId="00000000-0000-0000-0000-000000000000",
+    )
+    if ok:
+        raise LifecycleError("retCode matrix expected fake cancel to fail, but it succeeded")
+
+    cases.append(
+        {
+            "name": "fake_cancel",
+            "expected_failure": True,
+            **summarize_failure(result),
+        }
+    )
+
+    return cases
+
+
+def run_restart_recovery(
+    *,
+    symbol: str,
+    side: str,
+    entry_price: Decimal,
+    qty: Decimal,
+    stop_loss: Decimal,
+    order_id: str,
+    db_path: Path,
+) -> dict[str, Any]:
+    db_sync = DatabaseSync(db_path=str(db_path))
+    saved = db_sync.save_open_trade(
+        symbol=symbol,
+        side=side,
+        entry=float(entry_price),
+        qty=float(qty),
+        sl=float(stop_loss),
+        score=0,
+        poi_type="BYBIT_DEMO_LIFECYCLE",
+        order_id=order_id,
+        status="OPEN",
+    )
+    if not saved:
+        raise LifecycleError("restart recovery failed to seed local DB")
+
+    if db_sync._db is not None:
+        db_sync._db.close()
+
+    exchange = ExchangeManager()
+    restarted_db = TradeDatabase(str(db_path))
+    exchange.sync_db_with_exchange(restarted_db)
+    recovered = restarted_db.get_open_trade(symbol=symbol, side=side)
+
+    if not recovered:
+        raise LifecycleError("restart recovery did not preserve visible exchange position as OPEN")
+
+    try:
+        restarted_db.close()
+    except Exception:
+        pass
+
+    return {
+        "name": "restart_recovery_sync",
+        "db_path": str(db_path),
+        "status": str(recovered.get("status", "")),
+        "qty": float(recovered.get("qty", 0.0) or 0.0),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--symbol", default="XRPUSDT")
     parser.add_argument("--max-notional", type=Decimal, default=Decimal("25"))
     parser.add_argument("--wait", type=float, default=12.0)
+    parser.add_argument("--skip-partial-close", action="store_true")
+    parser.add_argument("--skip-partial-fill-probe", action="store_true")
     args = parser.parse_args()
 
     if not (config.BYBIT_DEMO or config.BYBIT_TESTNET):
@@ -263,6 +562,7 @@ def main() -> int:
 
     symbol = args.symbol.upper()
     prefix = f"cdx{int(time.time())}"
+    db_path = Path(tempfile.gettempdir()) / f"cryptobot_bybit_demo_lifecycle_{prefix}.db"
     opened_position = False
     summary: dict[str, Any] = {
         "status": "STARTED",
@@ -283,7 +583,25 @@ def main() -> int:
         tick_size = instrument["tick_size"]
 
         far_limit_price = round_step(last_price * Decimal("0.80"), tick_size, "down")
-        qty = choose_qty(last_price, far_limit_price, instrument, args.max_notional)
+        qty = choose_qty(
+            last_price,
+            far_limit_price,
+            instrument,
+            args.max_notional,
+            require_partial_close=not args.skip_partial_close,
+        )
+
+        if not args.skip_partial_fill_probe:
+            summary["steps"].append(
+                run_partial_fill_probe(
+                    session,
+                    symbols=["WIFUSDT", "NEARUSDT", "RENDERUSDT", "OPUSDT", symbol],
+                    max_notional=args.max_notional,
+                    prefix=prefix,
+                    wait_s=args.wait,
+                )
+            )
+
         position_idx, pending_order_id = place_far_limit_with_mode_fallback(
             session,
             symbol=symbol,
@@ -305,6 +623,46 @@ def main() -> int:
         if pending_order_id not in open_ids:
             raise LifecycleError("created limit order was not visible in open orders")
 
+        amended_price = round_step(last_price * Decimal("0.79"), tick_size, "down")
+        api_call(
+            session.amend_order,
+            category=CATEGORY,
+            symbol=symbol,
+            orderId=pending_order_id,
+            price=decimal_to_str(amended_price),
+        )
+        time.sleep(0.5)
+        amended_order = find_order(session, symbol, pending_order_id)
+        if not amended_order:
+            raise LifecycleError("amended limit order disappeared from open orders")
+        visible_price = decimal_from(amended_order.get("price"))
+        if visible_price != amended_price:
+            raise LifecycleError(
+                f"amended price mismatch: expected {decimal_to_str(amended_price)}, "
+                f"got {decimal_to_str(visible_price)}"
+            )
+        summary["steps"].append(
+            {
+                "name": "limit_amend",
+                "order_id": pending_order_id,
+                "price": decimal_to_str(amended_price),
+            }
+        )
+
+        summary["steps"].append(
+            {
+                "name": "retcode_matrix",
+                "cases": run_retcode_matrix(
+                    session,
+                    symbol=symbol,
+                    qty=qty,
+                    price=amended_price,
+                    position_idx=position_idx,
+                    prefix=prefix,
+                ),
+            }
+        )
+
         api_call(session.cancel_order, category=CATEGORY, symbol=symbol, orderId=pending_order_id)
         summary["steps"].append({"name": "limit_cancel", "order_id": pending_order_id})
         time.sleep(0.5)
@@ -314,7 +672,7 @@ def main() -> int:
             raise LifecycleError("cancelled limit order is still visible in open orders")
 
         open_link = f"{prefix}-open"
-        api_call(
+        open_res = api_call(
             session.place_order,
             category=CATEGORY,
             symbol=symbol,
@@ -325,6 +683,7 @@ def main() -> int:
             orderLinkId=open_link,
             positionIdx=position_idx,
         )
+        open_order_id = str(open_res.get("result", {}).get("orderId", ""))
         opened_position = True
         positions = wait_for_position(session, symbol, want_open=True, timeout_s=args.wait)
         position = positions[0]
@@ -339,6 +698,45 @@ def main() -> int:
                 "entry_price": decimal_to_str(entry_price),
             }
         )
+
+        if not args.skip_partial_close:
+            partial_qty = round_step(open_qty / Decimal("2"), instrument["qty_step"], "down")
+            if partial_qty <= 0 or partial_qty >= open_qty:
+                raise LifecycleError(f"invalid partial close qty: {decimal_to_str(partial_qty)}")
+
+            api_call(
+                session.place_order,
+                category=CATEGORY,
+                symbol=symbol,
+                side="Sell",
+                orderType="Market",
+                qty=decimal_to_str(partial_qty),
+                reduceOnly=True,
+                timeInForce="IOC",
+                orderLinkId=f"{prefix}-partial-close",
+                positionIdx=position_idx,
+            )
+
+            deadline = time.time() + args.wait
+            remaining_positions: list[dict[str, Any]] = []
+            while time.time() < deadline:
+                remaining_positions = get_positions(session, symbol)
+                if remaining_positions:
+                    remaining_qty = decimal_from(remaining_positions[0].get("size"))
+                    if Decimal("0") < remaining_qty < open_qty:
+                        open_qty = remaining_qty
+                        break
+                time.sleep(0.5)
+            else:
+                raise LifecycleError(f"partial close did not leave a smaller open position: {remaining_positions}")
+
+            summary["steps"].append(
+                {
+                    "name": "partial_reduce_only_close",
+                    "closed_qty": decimal_to_str(partial_qty),
+                    "remaining_qty": decimal_to_str(open_qty),
+                }
+            )
 
         tp_price = round_step(entry_price * Decimal("1.20"), tick_size, "up")
         tp_res = api_call(
@@ -373,6 +771,18 @@ def main() -> int:
             positionIdx=position_idx,
         )
         summary["steps"].append({"name": "stop_loss_set", "price": decimal_to_str(sl_price)})
+
+        summary["steps"].append(
+            run_restart_recovery(
+                symbol=symbol,
+                side="LONG",
+                entry_price=entry_price,
+                qty=open_qty,
+                stop_loss=sl_price,
+                order_id=open_order_id or open_link,
+                db_path=db_path,
+            )
+        )
 
         api_call(session.cancel_order, category=CATEGORY, symbol=symbol, orderId=tp_order_id)
         summary["steps"].append({"name": "reduce_only_tp_cancel", "order_id": tp_order_id})
