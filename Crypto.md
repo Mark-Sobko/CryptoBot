@@ -10,6 +10,7 @@
 │   ├── instrument_cache.py
 │   ├── logger.py
 │   ├── notifier.py
+│   ├── paper_trading.py
 │   ├── position_manager.py
 │   ├── risk_manager.py
 │   └── tp_manager.py
@@ -35,3 +36,8 @@
 │   └── runtime logs (ignored by git)
 ├── main.py
 ├── requirements.txt
+├── scripts
+│   └── run_paper_lifecycle.py
+├── tests
+│   ├── test_execution_safety.py
+│   └── test_paper_lifecycle.py

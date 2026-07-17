@@ -12,9 +12,10 @@ class DatabaseSync:
     Расширен: добавлены методы чтения (Read-Models) для RiskManager'а.
     """
 
-    def __init__(self):
+    def __init__(self, db_path: Optional[str] = None):
         self.logger = logging.getLogger("SMC_BOT.DatabaseSync")
         self._db = None
+        self.db_path = db_path
 
     def _get_db(self):
         if self._db is not None:
@@ -22,7 +23,7 @@ class DatabaseSync:
 
         from core.database import TradeDatabase
 
-        self._db = TradeDatabase()
+        self._db = TradeDatabase(self.db_path) if self.db_path else TradeDatabase()
         return self._db
 
     def save_open_trade(
