@@ -37,7 +37,18 @@
 ├── main.py
 ├── requirements.txt
 ├── scripts
+│   ├── run_bybit_demo_lifecycle.py
 │   └── run_paper_lifecycle.py
 ├── tests
 │   ├── test_execution_safety.py
 │   └── test_paper_lifecycle.py
+
+Safe lifecycle checks:
+
+```bash
+python3 scripts/run_paper_lifecycle.py --db /tmp/cryptobot_paper_lifecycle.db --reset-db
+.venv/bin/python scripts/run_bybit_demo_lifecycle.py --symbol XRPUSDT --max-notional 15
+```
+
+`run_bybit_demo_lifecycle.py` fails closed unless `BYBIT_DEMO=true` or
+`BYBIT_TESTNET=true`.
