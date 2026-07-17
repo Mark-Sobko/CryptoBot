@@ -189,15 +189,99 @@ class ExchangeManager:
 
     def can_open_new_trade(self, max_trades: int) -> bool:
         active_count = len(self.get_active_positions())
+        pending_orders = self.get_pending_entry_orders()
+        if pending_orders is None:
+            self.logger.error("🛑 [EXCHANGE LIMIT] Failed to verify pending entry orders")
+            return False
 
-        if active_count >= max_trades:
+        pending_count = len(pending_orders)
+
+        if active_count + pending_count >= max_trades:
             self.logger.warning(
                 f"⚠️ [EXCHANGE LIMIT] Open positions limit reached: "
-                f"{active_count}/{max_trades}"
+                f"{active_count} active + {pending_count} pending / {max_trades}"
             )
             return False
 
         return True
+
+    def get_pending_entry_orders(self, symbol: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
+        kwargs: Dict[str, Any] = {
+            "category": self.CATEGORY,
+            "settleCoin": self.SETTLE_COIN,
+        }
+
+        if symbol:
+            kwargs.pop("settleCoin", None)
+            kwargs["symbol"] = symbol
+
+        res = self._request_with_retry(self.session.get_open_orders, **kwargs)
+        if not res:
+            return None
+
+        orders = res.get("result", {}).get("list", [])
+        pending_orders: List[Dict[str, Any]] = []
+
+        for order in orders:
+            order_type = str(order.get("orderType", "")).upper()
+            order_status = str(order.get("orderStatus", "")).upper()
+            reduce_only = str(order.get("reduceOnly", "")).lower() == "true"
+            close_on_trigger = str(order.get("closeOnTrigger", "")).lower() == "true"
+
+            if reduce_only or close_on_trigger:
+                continue
+
+            if order_type == "LIMIT" and order_status in {"NEW", "PARTIALLYFILLED", "UNTRIGGERED"}:
+                pending_orders.append(order)
+
+        return pending_orders
+
+    def count_pending_entry_orders(self) -> Optional[int]:
+        orders = self.get_pending_entry_orders()
+        return len(orders) if orders is not None else None
+
+    def get_latest_closed_pnl(self, symbol: str) -> Optional[Dict[str, float]]:
+        if not hasattr(self.session, "get_closed_pnl"):
+            return None
+
+        res = self._request_with_retry(
+            self.session.get_closed_pnl,
+            category=self.CATEGORY,
+            symbol=symbol,
+            limit=1,
+        )
+
+        if not res:
+            return None
+
+        try:
+            items = res.get("result", {}).get("list", [])
+            if not items:
+                return None
+
+            item = items[0]
+            pnl_usd = float(item.get("closedPnl", 0.0) or 0.0)
+            exit_price = float(
+                item.get("avgExitPrice")
+                or item.get("exitPrice")
+                or item.get("avgPrice")
+                or 0.0
+            )
+            qty = float(item.get("qty", 0.0) or 0.0)
+            entry_price = float(item.get("avgEntryPrice", item.get("entryPrice", 0.0)) or 0.0)
+            pnl_pct = 0.0
+
+            if qty > 0 and entry_price > 0:
+                pnl_pct = (pnl_usd / (entry_price * qty)) * 100.0
+
+            return {
+                "exit_price": exit_price,
+                "pnl_usd": pnl_usd,
+                "pnl_pct": pnl_pct,
+            }
+        except Exception as e:
+            self.logger.warning(f"⚠️ [CLOSED PNL PARSE ERROR] {symbol}: {e}")
+            return None
 
     def sync_db_with_exchange(self, db_instance) -> None:
         """
@@ -207,11 +291,12 @@ class ExchangeManager:
         """
         try:
             active_on_exchange = self.get_active_positions()
-            active_symbols_on_exchange = {p["symbol"] for p in active_on_exchange}
+            active_keys_on_exchange = set()
 
             for pos in active_on_exchange:
                 symbol = str(pos.get("symbol", ""))
                 side = self._normalize_position_side(str(pos.get("side", "")))
+                active_keys_on_exchange.add((symbol, side))
                 db_instance.mark_trade_open(
                     symbol=symbol,
                     side=side,
@@ -223,21 +308,29 @@ class ExchangeManager:
             open_in_db = db_instance.get_open_positions()
             
             for trade in open_in_db:
-                if trade['symbol'] not in active_symbols_on_exchange:
+                symbol = str(trade.get("symbol", ""))
+                side = self._normalize_position_side(str(trade.get("side", "")))
+                if (symbol, side) not in active_keys_on_exchange:
                     self.logger.warning(f"🔄 [SYNC] Сделка {trade['symbol']} (ID: {trade['id']}) не найдена на бирже. Закрываем в БД.")
+                    closed_pnl = self.get_latest_closed_pnl(symbol)
+                    close_status = "CLOSED" if closed_pnl else "CLOSED_UNVERIFIED"
+                    exit_price = closed_pnl["exit_price"] if closed_pnl else 0.0
+                    pnl_usd = closed_pnl["pnl_usd"] if closed_pnl else 0.0
+                    pnl_pct = closed_pnl["pnl_pct"] if closed_pnl else 0.0
                     
-                    # Закрываем сделку в базе данных
                     db_instance.close_trade(
-                        symbol=trade['symbol'],
-                        exit_price=0.0, 
-                        pnl_usd=0.0,    
-                        pnl_pct=0.0,
-                        trade_id=trade['id']
+                        symbol=symbol,
+                        exit_price=exit_price,
+                        pnl_usd=pnl_usd,
+                        pnl_pct=pnl_pct,
+                        trade_id=trade['id'],
+                        status=close_status,
                     )
 
             for trade in getattr(db_instance, "get_pending_orders", lambda: [])():
                 symbol = str(trade.get("symbol", ""))
-                if symbol in active_symbols_on_exchange:
+                side = self._normalize_position_side(str(trade.get("side", "")))
+                if (symbol, side) in active_keys_on_exchange:
                     continue
 
                 order_id = str(trade.get("order_id", "") or "")

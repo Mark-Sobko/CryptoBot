@@ -71,6 +71,8 @@ class InstitutionalBot:
                 current_balance = self.ex.get_total_balance()
                 if current_balance > 0:
                     self.risk_manager.balance = current_balance
+                else:
+                    current_balance = self.risk_manager.balance
 
                 risk_cfg = config.get_current_risk()
                 now = datetime.datetime.now(datetime.timezone.utc)
@@ -241,7 +243,10 @@ class InstitutionalBot:
                     "liquidity_context": liq_quality
                 }
 
-                score = self.scoring.calculate(analysis) + score_bonus
+                poi_side_aligned = bool(final_poi and final_poi.get("side") == trend)
+                analysis["poi_ok"] = poi_side_aligned and bool(mtf_context.get("smc_ok", False))
+
+                score = max(0, min(100, self.scoring.calculate(analysis) + score_bonus))
 
                 poi_status = "✅" if analysis["poi_ok"] else "❌"
                 struct_status = (
@@ -278,6 +283,12 @@ class InstitutionalBot:
 
                 if final_poi is None:
                     self.logger.warning(f"⚠️ {symbol} | Score passed but POI is missing")
+                    continue
+
+                if final_poi.get("side") != trend:
+                    self.logger.warning(
+                        f"⚠️ {symbol} | POI side mismatch: poi={final_poi.get('side')} trend={trend}"
+                    )
                     continue
 
                 daily_pnl_usd = self.db.get_today_pnl_usd()
@@ -432,6 +443,9 @@ class InstitutionalBot:
     def _send_cycle_reports(self, summary_list) -> None:
         try:
             equity = self.ex.get_total_balance()
+            if equity <= 0:
+                equity = self.risk_manager.balance
+
             self.notifier.notify_market_summary(summary_list, equity)
 
             reports = self.stats_analyzer.generate_report_chunks()

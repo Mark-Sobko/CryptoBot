@@ -81,6 +81,26 @@ class PositionManager:
 
         return None
 
+    def _load_cached_position(self, symbol: str, side: str) -> Optional[Dict[str, Any]]:
+        cached = self.position_cache.get(symbol)
+        if cached and cached.get("side") == side:
+            return cached
+
+        trade = self.database_sync.get_open_trade(symbol=symbol, side=side)
+        if not trade:
+            return None
+
+        self.remember_position(
+            symbol=symbol,
+            side=side,
+            initial_qty=float(trade.get("qty", 0.0) or 0.0),
+            entry_price=float(trade.get("entry_price", 0.0) or 0.0),
+            sl=float(trade.get("stop_loss", 0.0) or 0.0),
+            position_idx=self.get_position_idx(side),
+            tps_placed=False,
+        )
+        return self.position_cache.get(symbol)
+
     @staticmethod
     def normalize_side(side: str) -> Optional[str]:
         side_upper = str(side).upper().strip()
@@ -205,7 +225,7 @@ class PositionManager:
         Если это сработавший лимитный ордер (у которого есть только 1 вшитый TP),
         метод снимет базовый TP и выставит правильный каскад лимиток.
         """
-        cached = self.position_cache.get(symbol)
+        cached = self._load_cached_position(symbol, side)
         
         # Если позиция есть в кэше и флаг tps_placed == False
         if cached and cached.get("side") == side and not cached.get("tps_placed"):
@@ -243,6 +263,8 @@ class PositionManager:
         current_size: float,
     ) -> bool:
         cached = self.position_cache.get(symbol)
+        if not cached:
+            cached = self._load_cached_position(symbol, side)
 
         if cached and cached.get("side") == side:
             initial_qty = float(cached.get("initial_qty", 0.0) or 0.0)
@@ -253,17 +275,20 @@ class PositionManager:
             from core.database import TradeDatabase
 
             db = TradeDatabase()
-            cursor = db.conn.cursor()
-            cursor.execute(
-                """
-                SELECT qty FROM trades
-                WHERE symbol = ? AND side = ?
-                ORDER BY entry_time DESC
-                LIMIT 1
-                """,
-                (symbol, side),
-            )
-            row = cursor.fetchone()
+            try:
+                cursor = db.conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT qty FROM trades
+                    WHERE symbol = ? AND side = ? AND status = 'OPEN'
+                    ORDER BY entry_time DESC
+                    LIMIT 1
+                    """,
+                    (symbol, side),
+                )
+                row = cursor.fetchone()
+            finally:
+                db.close()
 
             if row:
                 initial_qty = float(row[0])

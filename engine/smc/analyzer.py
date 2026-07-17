@@ -68,7 +68,7 @@ class SMCAnalyzer:
         has_liquidity_target = False
 
         if smc_ok and poi and pd_zones:
-            poi_price = float(poi.get("price", 0.0))
+            poi_price = float(poi.get("price", poi.get("mid", 0.0)) or 0.0)
             eq_price = float(pd_zones.get("equilibrium", 0.0))
             
             # Лонг в дискаунте (ниже эквилибриума), Шорт в премиуме (выше эквилибриума)

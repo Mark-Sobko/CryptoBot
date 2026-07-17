@@ -8,9 +8,9 @@ python-dotenv==1.1.0
 requests==2.32.3
 
 # ===== DATA SCIENCE & ANALYSIS =====
-numpy
-pandas
-pandas-ta
+numpy==2.2.6
+pandas==3.0.3
+pandas-ta==0.4.71b0
 python-dateutil==2.9.0
 pytz==2025.1
 six==1.16.0

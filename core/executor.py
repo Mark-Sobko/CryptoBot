@@ -38,7 +38,6 @@ class TradeExecutor:
         self.instruments = InstrumentCache(self.session)
         self.tp_manager = TPManager(self.session, self.instruments)
         self.position_manager = PositionManager(self.session, self.instruments)
-        self.instruments = InstrumentCache(self.session)
         self.database_sync = DatabaseSync()
 
         global_cfg = config.RISK_MANAGEMENT.get("global", {})
@@ -194,6 +193,13 @@ class TradeExecutor:
         return None
     # =========================================================================
 
+    @staticmethod
+    def _make_order_link_id(symbol: str, order_type: str) -> str:
+        ts = int(time.time() * 1000)
+        clean_symbol = "".join(ch for ch in str(symbol).upper() if ch.isalnum())
+        clean_type = str(order_type).upper()[0]
+        return f"smc-{clean_symbol}-{clean_type}-{ts}"[:36]
+
     def execute_institutional_entry(
         self,
         symbol: str,
@@ -207,6 +213,7 @@ class TradeExecutor:
         limit_price: Optional[float] = None  # Внедряем цену исполнения
     ) -> Optional[Dict[str, Any]]:
         try:
+            order_type = "Limit" if str(order_type).lower() == "limit" else "Market"
             side_info = self._normalize_side(side)
             if side_info is None:
                 self.logger.error(f"🛑 [{symbol}] Invalid side: {side}")
@@ -286,22 +293,31 @@ class TradeExecutor:
                 first_tp_key = sorted(tp_levels.keys())[0]
                 take_profit_price = str(tp_levels[first_tp_key])
 
-            response = self._api_call(
-                self.session.place_order,
-                category=self.CATEGORY,
-                symbol=symbol,
-                side=order_side,
-                orderType=order_type,
-                price=str(entry_price) if order_type == "Limit" else None,
-                qty=str(normalized_qty),
-                stopLoss=str(normalized_sl),
-                slTriggerBy="LastPrice",
-                # Привязываем базовый TP1 к лимитке прямо на сервере Bybit:
-                takeProfit=take_profit_price if order_type == "Limit" else None,
-                tpTriggerBy="LastPrice" if order_type == "Limit" else None,
-                tpslMode="Full",
-                positionIdx=position_idx,
-            )
+            order_link_id = self._make_order_link_id(symbol, order_type)
+            order_params = {
+                "category": self.CATEGORY,
+                "symbol": symbol,
+                "side": order_side,
+                "orderType": order_type,
+                "qty": str(normalized_qty),
+                "stopLoss": str(normalized_sl),
+                "slTriggerBy": "LastPrice",
+                "tpslMode": "Full",
+                "positionIdx": position_idx,
+                "orderLinkId": order_link_id,
+            }
+
+            if order_type == "Limit":
+                order_params["price"] = str(entry_price)
+                order_params["timeInForce"] = "GTC"
+
+                if take_profit_price:
+                    order_params["takeProfit"] = take_profit_price
+                    order_params["tpTriggerBy"] = "LastPrice"
+            else:
+                order_params["timeInForce"] = "IOC"
+
+            response = self._api_call(self.session.place_order, **order_params)
 
             if not response:
                 self.logger.error(f"❌ [{symbol}] {order_type} order rejected or failed")
@@ -355,6 +371,7 @@ class TradeExecutor:
 
             trade_data = {
                 "order_id": order_id,
+                "order_link_id": order_link_id,
                 "entry_price": entry_price,
                 "qty": normalized_qty,
                 "sl": normalized_sl,
@@ -372,7 +389,7 @@ class TradeExecutor:
 
             self.audit.log_trade_event("ORDER_EXECUTED", symbol, trade_data)
 
-            self.database_sync.save_open_trade(
+            saved = self.database_sync.save_open_trade(
                 symbol=symbol,
                 side=trade_side,
                 entry=entry_price,
@@ -383,6 +400,21 @@ class TradeExecutor:
                 order_id=order_id,
                 status="PENDING_ORDER" if order_type == "Limit" else "OPEN",
             )
+
+            if not saved:
+                self.logger.critical(
+                    f"🚨 [{symbol}] Order placed but SQLite persistence failed | orderId={order_id}"
+                )
+                self.audit.log_trade_event(
+                    "DB_PERSISTENCE_FAILED",
+                    symbol,
+                    {
+                        "order_id": order_id,
+                        "order_link_id": order_link_id,
+                        "side": trade_side,
+                        "qty": normalized_qty,
+                    },
+                )
 
             if not tp_ok:
                 self.logger.warning(

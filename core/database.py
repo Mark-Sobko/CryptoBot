@@ -134,7 +134,14 @@ class TradeDatabase:
                 entry_price = float(data.get("entry_price", data.get("entry")))
                 order_id = str(data.get("order_id", "") or "") or None
                 status = str(data.get("status", "OPEN")).upper()
-                allowed_statuses = {"PENDING_ORDER", "OPEN", "CLOSED", "CANCELLED", "REJECTED"}
+                allowed_statuses = {
+                    "PENDING_ORDER",
+                    "OPEN",
+                    "CLOSED",
+                    "CLOSED_UNVERIFIED",
+                    "CANCELLED",
+                    "REJECTED",
+                }
                 if status not in allowed_statuses:
                     self.logger.warning(f"⚠️ DB add_trade: unknown status {status}, falling back to OPEN")
                     status = "OPEN"
@@ -400,6 +407,7 @@ class TradeDatabase:
         order_id: Optional[str] = None,
         trade_id: Optional[int] = None,
         side: Optional[str] = None,
+        status: str = "CLOSED",
     ) -> bool:
         """
         Закрытие позиции.
@@ -412,27 +420,33 @@ class TradeDatabase:
         with self._lock:
             try:
                 now = datetime.now(timezone.utc).isoformat()
+                close_status = str(status).upper()
+                if close_status not in {"CLOSED", "CLOSED_UNVERIFIED"}:
+                    self.logger.warning(
+                        f"⚠️ DB close_trade: invalid close status {close_status}, falling back to CLOSED"
+                    )
+                    close_status = "CLOSED"
 
                 if trade_id is not None:
                     query = """
                         UPDATE trades
-                        SET exit_time = ?, exit_price = ?, pnl_usd = ?, pnl_pct = ?, status = 'CLOSED'
+                        SET exit_time = ?, exit_price = ?, pnl_usd = ?, pnl_pct = ?, status = ?
                         WHERE id = ? AND status = 'OPEN'
                     """
-                    params = (now, float(exit_price), float(pnl_usd), float(pnl_pct), int(trade_id))
+                    params = (now, float(exit_price), float(pnl_usd), float(pnl_pct), close_status, int(trade_id))
 
                 elif order_id:
                     query = """
                         UPDATE trades
-                        SET exit_time = ?, exit_price = ?, pnl_usd = ?, pnl_pct = ?, status = 'CLOSED'
+                        SET exit_time = ?, exit_price = ?, pnl_usd = ?, pnl_pct = ?, status = ?
                         WHERE order_id = ? AND status = 'OPEN'
                     """
-                    params = (now, float(exit_price), float(pnl_usd), float(pnl_pct), str(order_id))
+                    params = (now, float(exit_price), float(pnl_usd), float(pnl_pct), close_status, str(order_id))
 
                 elif side:
                     query = """
                         UPDATE trades
-                        SET exit_time = ?, exit_price = ?, pnl_usd = ?, pnl_pct = ?, status = 'CLOSED'
+                        SET exit_time = ?, exit_price = ?, pnl_usd = ?, pnl_pct = ?, status = ?
                         WHERE id = (
                             SELECT id FROM trades
                             WHERE symbol = ? AND side = ? AND status = 'OPEN'
@@ -440,12 +454,12 @@ class TradeDatabase:
                             LIMIT 1
                         )
                     """
-                    params = (now, float(exit_price), float(pnl_usd), float(pnl_pct), symbol, side)
+                    params = (now, float(exit_price), float(pnl_usd), float(pnl_pct), close_status, symbol, side)
 
                 else:
                     query = """
                         UPDATE trades
-                        SET exit_time = ?, exit_price = ?, pnl_usd = ?, pnl_pct = ?, status = 'CLOSED'
+                        SET exit_time = ?, exit_price = ?, pnl_usd = ?, pnl_pct = ?, status = ?
                         WHERE id = (
                             SELECT id FROM trades
                             WHERE symbol = ? AND status = 'OPEN'
@@ -453,7 +467,7 @@ class TradeDatabase:
                             LIMIT 1
                         )
                     """
-                    params = (now, float(exit_price), float(pnl_usd), float(pnl_pct), symbol)
+                    params = (now, float(exit_price), float(pnl_usd), float(pnl_pct), close_status, symbol)
 
                 cursor = self.conn.cursor()
                 cursor.execute(query, params)
@@ -464,7 +478,7 @@ class TradeDatabase:
                     return False
 
                 self.logger.info(
-                    f"💾 DATABASE | CLOSED saved | {symbol} PnL={pnl_usd:.2f} USD"
+                    f"💾 DATABASE | {close_status} saved | {symbol} PnL={pnl_usd:.2f} USD"
                 )
                 return True
 

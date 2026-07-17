@@ -43,6 +43,44 @@ class RiskManager:
         return symbol.replace("/", "").replace("-", "").upper().strip()
 
     @staticmethod
+    def _is_pending_entry_order(order: Dict[str, Any]) -> bool:
+        order_type = str(order.get("orderType", "")).upper()
+        order_status = str(order.get("orderStatus", "")).upper()
+        reduce_only = str(order.get("reduceOnly", "")).lower() == "true"
+        close_on_trigger = str(order.get("closeOnTrigger", "")).lower() == "true"
+
+        return (
+            order_type == "LIMIT"
+            and order_status in {"NEW", "PARTIALLYFILLED", "UNTRIGGERED"}
+            and not reduce_only
+            and not close_on_trigger
+        )
+
+    def _get_pending_orders(self, exchange_manager: Any, symbol: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
+        if exchange_manager is None:
+            return []
+
+        if hasattr(exchange_manager, "get_pending_entry_orders"):
+            try:
+                return exchange_manager.get_pending_entry_orders(symbol=symbol)
+            except Exception as e:
+                self.logger.error(f"⚠️ [RISK ERROR] Failed to verify pending orders: {e}")
+                return None
+
+        try:
+            kwargs = {"category": "linear"}
+            if symbol:
+                kwargs["symbol"] = symbol
+            res = exchange_manager.session.get_open_orders(**kwargs)
+            if not isinstance(res, dict) or res.get("retCode") != 0:
+                return None
+            orders = res.get("result", {}).get("list", [])
+            return [order for order in orders if self._is_pending_entry_order(order)]
+        except Exception as e:
+            self.logger.error(f"⚠️ [RISK ERROR] Failed to verify pending orders: {e}")
+            return None
+
+    @staticmethod
     def _round_down(value: float, precision: int = 4) -> float:
         quant = Decimal("1." + "0" * precision)
         return float(Decimal(str(value)).quantize(quant, rounding=ROUND_DOWN))
@@ -91,10 +129,14 @@ class RiskManager:
             return False, "DAILY_LOSS_LIMIT_HIT"
 
         max_trades = int(settings.get("max_open_trades", 3))
-        if len(active_positions) >= max_trades:
+        pending_orders = self._get_pending_orders(exchange_manager) if exchange_manager is not None else []
+        if pending_orders is None:
+            return False, "PENDING_ORDER_CHECK_FAILED"
+
+        if len(active_positions) + len(pending_orders) >= max_trades:
             self.logger.warning(
                 f"⚠️ [RISK BLOCK] Max open positions reached: "
-                f"{len(active_positions)}/{max_trades}"
+                f"{len(active_positions)} active + {len(pending_orders)} pending / {max_trades}"
             )
             return False, "MAX_TRADES_LIMIT"
 
@@ -142,18 +184,15 @@ class RiskManager:
 
         # 2. НОВАЯ ЗАЩИТА: Проверяем, нет ли уже выставленной ЛИМИТКИ в стакане Bybit
         if exchange_manager is not None:
-            try:
-                res = exchange_manager.session.get_open_orders(category="linear", symbol=symbol)
-                open_orders = res.get("result", {}).get("list", [])
-                
-                for order in open_orders:
-                    if order.get("orderType") == "Limit" and order.get("orderStatus") in ["New", "PartiallyFilled"]:
-                        self.logger.warning(
-                            f"⚠️ [RISK BLOCK] Pending LIMIT order already exists for {symbol}. Skipping to avoid duplicate exposure."
-                        )
-                        return False, "DUPLICATE_PENDING_LIMIT"
-            except Exception as e:
-                self.logger.error(f"⚠️ [RISK ERROR] Failed to verify pending orders for {symbol}: {e}")
+            symbol_pending_orders = self._get_pending_orders(exchange_manager, symbol=symbol)
+            if symbol_pending_orders is None:
+                return False, "PENDING_ORDER_CHECK_FAILED"
+
+            if symbol_pending_orders:
+                self.logger.warning(
+                    f"⚠️ [RISK BLOCK] Pending LIMIT order already exists for {symbol}. Skipping to avoid duplicate exposure."
+                )
+                return False, "DUPLICATE_PENDING_LIMIT"
 
         return True, "SAFE"
 

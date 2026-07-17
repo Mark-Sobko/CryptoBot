@@ -70,7 +70,8 @@ class DatabaseSync:
         pnl_usd: float, 
         pnl_pct: float = 0.0, 
         order_id: Optional[str] = None,
-        trade_id: Optional[int] = None
+        trade_id: Optional[int] = None,
+        status: str = "CLOSED",
     ) -> bool:
         """Обновляет статус сделки до CLOSED."""
         try:
@@ -81,11 +82,20 @@ class DatabaseSync:
                 pnl_usd=pnl_usd,
                 pnl_pct=pnl_pct,
                 order_id=order_id,
-                trade_id=trade_id
+                trade_id=trade_id,
+                status=status,
             )
         except Exception as e:
             self.logger.error(f"❌ [{symbol}] SQLite close_trade failed: {e}")
             return False
+
+    def get_open_trade(self, symbol: str, side: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        try:
+            db = self._get_db()
+            return db.get_open_trade(symbol=symbol, side=side)
+        except Exception as e:
+            self.logger.debug(f"Failed to fetch open trade for {symbol}: {e}")
+            return None
 
     def mark_trade_open(
         self,
@@ -114,7 +124,7 @@ class DatabaseSync:
     # [INSTITUTIONAL SCALING] Методы чтения (Read Models) для Risk Manager
     # =========================================================================
     def get_active_trades_count(self) -> int:
-        """Возвращает количество текущих активных (OPEN) сделок из базы."""
+        """Возвращает количество текущих OPEN и PENDING_ORDER сделок из базы."""
         try:
             db = self._get_db()
             cursor = db.conn.cursor()

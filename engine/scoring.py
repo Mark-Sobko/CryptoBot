@@ -123,7 +123,9 @@ class ScoringSystem:
         if not has_target:
             if trade_direction == "LONG" and results.get("has_eqh", False):
                 has_target = True
-            elif trade_direction == "SHORT" and results.get("has_ql", False):
+            elif trade_direction == "SHORT" and (
+                results.get("has_eql", False) or results.get("has_ql", False)
+            ):
                 has_target = True
 
         if has_target:
