@@ -98,6 +98,20 @@ class RiskManager:
             )
             return False, "MAX_TRADES_LIMIT"
 
+        for pos in active_positions:
+            try:
+                size = float(pos.get("size", 0) or 0)
+                stop_loss = float(pos.get("stop_loss", pos.get("stopLoss", 0)) or 0)
+            except Exception:
+                continue
+
+            if size > 0 and stop_loss <= 0:
+                symbol_name = pos.get("symbol", "UNKNOWN")
+                self.logger.error(
+                    f"🛑 [RISK BLOCK] Active position without stop loss detected: {symbol_name}"
+                )
+                return False, "POSITION_WITHOUT_STOP"
+
         # --- [INSTITUTIONAL SCALING] Проверка Portfolio Heat ---
         # Максимально допустимый суммарный риск (например, 6% от депо)
         max_portfolio_heat_pct = float(self._get_global_settings().get("max_portfolio_heat_pct", 6.0))

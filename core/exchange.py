@@ -55,6 +55,15 @@ class ExchangeManager:
     def _is_success(res: Dict[str, Any]) -> bool:
         return isinstance(res, dict) and res.get("retCode") == 0
 
+    @staticmethod
+    def _normalize_position_side(side: str) -> str:
+        side_upper = str(side).upper().strip()
+        if side_upper in ("BUY", "LONG"):
+            return "LONG"
+        if side_upper in ("SELL", "SHORT"):
+            return "SHORT"
+        return side_upper
+
     def _request_with_retry(self, func, *args, **kwargs) -> Optional[Dict[str, Any]]:
         last_error = None
 
@@ -194,18 +203,26 @@ class ExchangeManager:
         """
         [INSTITUTIONAL SYNC]
         Синхронизирует активные позиции биржи с базой данных.
-        Если позиции нет на бирже, но она OPEN в базе -> закрываем её в базе.
+        Pending limit orders stay pending until a real exchange position appears.
         """
         try:
             active_on_exchange = self.get_active_positions()
-            # Создаем сет символов, которые реально открыты на бирже
-            active_symbols_on_exchange = {p['symbol'] for p in active_on_exchange}
+            active_symbols_on_exchange = {p["symbol"] for p in active_on_exchange}
+
+            for pos in active_on_exchange:
+                symbol = str(pos.get("symbol", ""))
+                side = self._normalize_position_side(str(pos.get("side", "")))
+                db_instance.mark_trade_open(
+                    symbol=symbol,
+                    side=side,
+                    entry_price=float(pos.get("entry_price", pos.get("entryPrice", 0.0)) or 0.0),
+                    qty=float(pos.get("size", 0.0) or 0.0),
+                    stop_loss=float(pos.get("stop_loss", pos.get("stopLoss", 0.0)) or 0.0),
+                )
             
-            # Получаем все OPEN сделки из базы
             open_in_db = db_instance.get_open_positions()
             
             for trade in open_in_db:
-                # Если сделка в базе помечена как OPEN, но её нет на бирже
                 if trade['symbol'] not in active_symbols_on_exchange:
                     self.logger.warning(f"🔄 [SYNC] Сделка {trade['symbol']} (ID: {trade['id']}) не найдена на бирже. Закрываем в БД.")
                     
@@ -216,6 +233,37 @@ class ExchangeManager:
                         pnl_usd=0.0,    
                         pnl_pct=0.0,
                         trade_id=trade['id']
+                    )
+
+            for trade in getattr(db_instance, "get_pending_orders", lambda: [])():
+                symbol = str(trade.get("symbol", ""))
+                if symbol in active_symbols_on_exchange:
+                    continue
+
+                order_id = str(trade.get("order_id", "") or "")
+                if not order_id:
+                    continue
+
+                res = self._request_with_retry(
+                    self.session.get_open_orders,
+                    category=self.CATEGORY,
+                    symbol=symbol,
+                )
+
+                if not res:
+                    continue
+
+                open_orders = res.get("result", {}).get("list", [])
+                still_pending = any(str(order.get("orderId", "")) == order_id for order in open_orders)
+
+                if not still_pending:
+                    self.logger.warning(
+                        f"🔄 [SYNC] Pending order {symbol} (ID: {trade['id']}) is no longer open. Marking CANCELLED."
+                    )
+                    db_instance.mark_trade_cancelled(
+                        symbol=symbol,
+                        order_id=order_id,
+                        trade_id=trade.get("id"),
                     )
         except Exception as e:
             self.logger.error(f"❌ [SYNC ERROR] Ошибка синхронизации БД: {e}")

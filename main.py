@@ -339,13 +339,9 @@ class InstitutionalBot:
                     score=score
                 )
 
-                # ХАК: Если R:R не идеален, но Score высокий (>= 80), всё равно разрешаем вход
-                if rr_status == "REJECT" and score >= 80:
-                    self.logger.info(f"✅ {symbol} | R:R rejected by standard, but OVERRIDDEN by high score ({score})")
-                    rr_status = "MARKET" # Разрешаем вход как по рынку
-
                 if rr_status == "REJECT":
                     self.logger.warning(f"⚠️ {symbol} | R:R rejected (Low score fallback)")
+                    continue
                 
 
                 is_limit_order = (rr_status == "LIMIT")

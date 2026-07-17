@@ -45,6 +45,7 @@ class PositionManager:
         entry_price: float,
         sl: float,
         position_idx: int,
+        tps_placed: bool = False,
     ) -> None:
         self.position_cache[symbol] = {
             "symbol": symbol,
@@ -53,7 +54,7 @@ class PositionManager:
             "entry_price": float(entry_price),
             "sl": float(sl),
             "position_idx": int(position_idx),
-            "tps_placed": False # Флаг для контроля каскадов
+            "tps_placed": bool(tps_placed)
         }
 
     def _api_call(self, func, *args, **kwargs) -> Optional[Dict[str, Any]]:

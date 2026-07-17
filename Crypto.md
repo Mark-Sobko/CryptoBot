@@ -1,5 +1,5 @@
 
-├── .env
+├── .env.example
 ├── config.py
 ├── core
 │   ├── __init__.py
@@ -14,9 +14,7 @@
 │   ├── risk_manager.py
 │   └── tp_manager.py
 ├── data
-│   ├── bot_memory 2.db-wal
-│   ├── bot_memory.db
-│   └── trade_history.json
+│   └── runtime SQLite/JSONL files (ignored by git)
 ├── engine
 │   ├── __init__.py
 │   ├── filters.py
@@ -34,6 +32,6 @@
 │   ├── stats_analyzer.py
 │   └── trend_engine.py
 ├── logs
-│   └── bot_execution.log
+│   └── runtime logs (ignored by git)
 ├── main.py
 ├── requirements.txt

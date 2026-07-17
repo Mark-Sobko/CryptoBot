@@ -168,6 +168,30 @@ class TradeExecutor:
             return False
             
         return True
+
+    @staticmethod
+    def _get_poi_reference_price(poi: Dict[str, Any]) -> Optional[float]:
+        if not isinstance(poi, dict):
+            return None
+
+        for key in ("price", "mid"):
+            try:
+                value = float(poi.get(key, 0) or 0)
+                if value > 0 and math.isfinite(value):
+                    return value
+            except Exception:
+                pass
+
+        try:
+            top = float(poi.get("top", 0) or 0)
+            bottom = float(poi.get("bottom", 0) or 0)
+            midpoint = (top + bottom) / 2.0
+            if top > 0 and bottom > 0 and midpoint > 0 and math.isfinite(midpoint):
+                return midpoint
+        except Exception:
+            return None
+
+        return None
     # =========================================================================
 
     def execute_institutional_entry(
@@ -207,9 +231,8 @@ class TradeExecutor:
             else:
                 entry_price = current_market_price
                 
-                # Защита от входа в улетевший поезд (если POI был передан и в нем есть цена)
-                expected_poi_price = float(poi.get("price", 0)) if isinstance(poi, dict) else 0
-                if expected_poi_price > 0:
+                expected_poi_price = self._get_poi_reference_price(poi)
+                if expected_poi_price is not None:
                     if not self._check_slippage(symbol, expected_poi_price, entry_price):
                         return None
             # -----------------------------------------------------------------
@@ -300,15 +323,6 @@ class TradeExecutor:
                 f"✅ [{symbol}] {order_type.upper()} ORDER PLACED | orderId={order_id}"
             )
 
-            self.position_manager.remember_position(
-                symbol=symbol,
-                side=trade_side,
-                initial_qty=normalized_qty,
-                entry_price=entry_price,
-                sl=normalized_sl,
-                position_idx=position_idx,
-            )
-
             # Выставляем каскад Тейков СРАЗУ только для Market-ордеров.
             # Для Лимиток каскад раскидает PositionManager, когда ордер полностью нальют.
             if order_type == "Market":
@@ -322,6 +336,16 @@ class TradeExecutor:
             else:
                 tp_ok = True  # Базовый лимитный TP1 уже улетел на биржу внутри ордера входа
             # -----------------------------------------------------------------------
+
+            self.position_manager.remember_position(
+                symbol=symbol,
+                side=trade_side,
+                initial_qty=normalized_qty,
+                entry_price=entry_price,
+                sl=normalized_sl,
+                position_idx=position_idx,
+                tps_placed=(order_type == "Market" and bool(tp_ok)),
+            )
 
             poi_type = (
                 poi.get("type", "SMC_Zone")
@@ -357,6 +381,7 @@ class TradeExecutor:
                 score=int(score),
                 poi_type=poi_type,
                 order_id=order_id,
+                status="PENDING_ORDER" if order_type == "Limit" else "OPEN",
             )
 
             if not tp_ok:

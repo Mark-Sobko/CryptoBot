@@ -35,6 +35,7 @@ class DatabaseSync:
         score: int,
         poi_type: str,
         order_id: str = "",
+        status: str = "OPEN",
     ) -> bool:
         try:
             db = self._get_db()
@@ -53,10 +54,10 @@ class DatabaseSync:
                 "rr": float(config.TRADE_EXECUTION.get("tp_ratios", [1.5, 3.0, 5.0])[0]),
                 "sl": float(sl),
                 "order_id": str(order_id),
+                "status": str(status),
             }
 
-            db.add_trade(db_data)
-            return True
+            return db.add_trade(db_data) is not None
 
         except Exception as e:
             self.logger.error(f"❌ [{symbol}] SQLite save_open_trade failed: {e}")
@@ -86,6 +87,29 @@ class DatabaseSync:
             self.logger.error(f"❌ [{symbol}] SQLite close_trade failed: {e}")
             return False
 
+    def mark_trade_open(
+        self,
+        symbol: str,
+        side: Optional[str] = None,
+        order_id: Optional[str] = None,
+        entry_price: Optional[float] = None,
+        qty: Optional[float] = None,
+        stop_loss: Optional[float] = None,
+    ) -> bool:
+        try:
+            db = self._get_db()
+            return db.mark_trade_open(
+                symbol=symbol,
+                side=side,
+                order_id=order_id,
+                entry_price=entry_price,
+                qty=qty,
+                stop_loss=stop_loss,
+            )
+        except Exception as e:
+            self.logger.error(f"❌ [{symbol}] SQLite mark_trade_open failed: {e}")
+            return False
+
     # =========================================================================
     # [INSTITUTIONAL SCALING] Методы чтения (Read Models) для Risk Manager
     # =========================================================================
@@ -94,7 +118,7 @@ class DatabaseSync:
         try:
             db = self._get_db()
             cursor = db.conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM trades WHERE status = 'OPEN'")
+            cursor.execute("SELECT COUNT(*) FROM trades WHERE status IN ('OPEN', 'PENDING_ORDER')")
             row = cursor.fetchone()
             return int(row[0]) if row else 0
         except Exception as e:

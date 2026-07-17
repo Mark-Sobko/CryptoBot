@@ -13,7 +13,7 @@ class TradeDatabase:
     [INSTITUTIONAL STORAGE ENGINE v5.0]
     SQLite WAL-хранилище:
     - потокобезопасная запись
-    - OPEN/CLOSED сделки
+    - PENDING_ORDER / OPEN / CLOSED сделки
     - order_id
     - stop_loss
     - восстановление открытых позиций после рестарта
@@ -126,13 +126,18 @@ class TradeDatabase:
 
     def add_trade(self, data: Dict[str, Any]) -> Optional[int]:
         """
-        Фиксация открытия позиции.
+        Фиксация ордера или открытия позиции.
         Совместимо и со старым ключом 'entry', и с новым 'entry_price'.
         """
         with self._lock:
             try:
                 entry_price = float(data.get("entry_price", data.get("entry")))
                 order_id = str(data.get("order_id", "") or "") or None
+                status = str(data.get("status", "OPEN")).upper()
+                allowed_statuses = {"PENDING_ORDER", "OPEN", "CLOSED", "CANCELLED", "REJECTED"}
+                if status not in allowed_statuses:
+                    self.logger.warning(f"⚠️ DB add_trade: unknown status {status}, falling back to OPEN")
+                    status = "OPEN"
 
                 cursor = self.conn.cursor()
 
@@ -151,7 +156,7 @@ class TradeDatabase:
                         rr,
                         status
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN')
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         order_id,
@@ -164,6 +169,7 @@ class TradeDatabase:
                         int(data.get("score", 0)),
                         str(data.get("poi_type", "SMC_Zone")),
                         float(data.get("rr", 0.0)),
+                        status,
                     ),
                 )
 
@@ -172,7 +178,7 @@ class TradeDatabase:
                 trade_id = cursor.lastrowid
 
                 self.logger.info(
-                    f"💾 DATABASE | OPEN saved | "
+                    f"💾 DATABASE | {status} saved | "
                     f"{data['symbol']} {data['side']} qty={data['qty']} id={trade_id}"
                 )
 
@@ -256,6 +262,134 @@ class TradeDatabase:
             except Exception as e:
                 self.logger.error(f"❌ DB get_open_positions failed: {e}")
                 return []
+
+    def get_pending_orders(self) -> List[Dict[str, Any]]:
+        """Pending limit orders that are not confirmed as exchange positions yet."""
+        with self._lock:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT * FROM trades
+                    WHERE status = 'PENDING_ORDER'
+                    ORDER BY entry_time DESC
+                    """
+                )
+                return [dict(row) for row in cursor.fetchall()]
+            except Exception as e:
+                self.logger.error(f"❌ DB get_pending_orders failed: {e}")
+                return []
+
+    def mark_trade_open(
+        self,
+        symbol: str,
+        side: Optional[str] = None,
+        order_id: Optional[str] = None,
+        entry_price: Optional[float] = None,
+        qty: Optional[float] = None,
+        stop_loss: Optional[float] = None,
+    ) -> bool:
+        """Promote a pending order to an open position after exchange fill is visible."""
+        with self._lock:
+            try:
+                updates = ["status = 'OPEN'"]
+                params: List[Any] = []
+
+                if entry_price is not None and float(entry_price) > 0:
+                    updates.append("entry_price = ?")
+                    params.append(float(entry_price))
+
+                if qty is not None and float(qty) > 0:
+                    updates.append("qty = ?")
+                    params.append(float(qty))
+
+                if stop_loss is not None and float(stop_loss) > 0:
+                    updates.append("stop_loss = ?")
+                    params.append(float(stop_loss))
+
+                if order_id:
+                    where = "order_id = ? AND status = 'PENDING_ORDER'"
+                    params.append(str(order_id))
+                elif side:
+                    where = """
+                        id = (
+                            SELECT id FROM trades
+                            WHERE symbol = ? AND side = ? AND status = 'PENDING_ORDER'
+                            ORDER BY entry_time DESC
+                            LIMIT 1
+                        )
+                    """
+                    params.extend([symbol, side])
+                else:
+                    where = """
+                        id = (
+                            SELECT id FROM trades
+                            WHERE symbol = ? AND status = 'PENDING_ORDER'
+                            ORDER BY entry_time DESC
+                            LIMIT 1
+                        )
+                    """
+                    params.append(symbol)
+
+                query = f"UPDATE trades SET {', '.join(updates)} WHERE {where}"
+                cursor = self.conn.cursor()
+                cursor.execute(query, params)
+                self.conn.commit()
+
+                if cursor.rowcount <= 0:
+                    return False
+
+                self.logger.info(f"💾 DATABASE | PENDING -> OPEN | {symbol}")
+                return True
+            except Exception as e:
+                self.logger.error(f"❌ DB mark_trade_open failed for {symbol}: {e}", exc_info=True)
+                return False
+
+    def mark_trade_cancelled(
+        self,
+        symbol: str,
+        order_id: Optional[str] = None,
+        trade_id: Optional[int] = None,
+    ) -> bool:
+        """Mark a pending order as cancelled without polluting realised PnL."""
+        with self._lock:
+            try:
+                now = datetime.now(timezone.utc).isoformat()
+
+                if trade_id is not None:
+                    query = """
+                        UPDATE trades
+                        SET exit_time = ?, status = 'CANCELLED'
+                        WHERE id = ? AND status = 'PENDING_ORDER'
+                    """
+                    params = (now, int(trade_id))
+                elif order_id:
+                    query = """
+                        UPDATE trades
+                        SET exit_time = ?, status = 'CANCELLED'
+                        WHERE order_id = ? AND status = 'PENDING_ORDER'
+                    """
+                    params = (now, str(order_id))
+                else:
+                    query = """
+                        UPDATE trades
+                        SET exit_time = ?, status = 'CANCELLED'
+                        WHERE id = (
+                            SELECT id FROM trades
+                            WHERE symbol = ? AND status = 'PENDING_ORDER'
+                            ORDER BY entry_time DESC
+                            LIMIT 1
+                        )
+                    """
+                    params = (now, symbol)
+
+                cursor = self.conn.cursor()
+                cursor.execute(query, params)
+                self.conn.commit()
+                return cursor.rowcount > 0
+            except Exception as e:
+                self.logger.error(f"❌ DB mark_trade_cancelled failed for {symbol}: {e}", exc_info=True)
+                return False
 
     def close_trade(
         self,

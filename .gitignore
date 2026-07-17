@@ -1,1 +1,29 @@
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 venv/
+.venv/
+
+# Runtime data
+logs/
+*.log
+bot_runtime*.log
+deploy_log.txt
+data/*.db
+data/*.db-*
+data/*.sqlite*
+data/*.json
+data/*.jsonl
+
+# OS / cloud metadata
+.DS_Store
+*.icloud

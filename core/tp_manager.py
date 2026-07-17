@@ -193,13 +193,28 @@ class TPManager:
             )
             time.sleep(self.request_delay)
             
-            # Снимаем все открытые лимитные ордера ReduceOnly по этому символу
-            self._api_call(
-                self.session.cancel_all_orders,
+            res = self._api_call(
+                self.session.get_open_orders,
                 category=self.CATEGORY,
-                symbol=symbol
+                symbol=symbol,
             )
-            time.sleep(self.request_delay)
+
+            open_orders = res.get("result", {}).get("list", []) if res else []
+            for order in open_orders:
+                reduce_only = str(order.get("reduceOnly", "")).lower() == "true"
+                close_on_trigger = str(order.get("closeOnTrigger", "")).lower() == "true"
+                order_id = str(order.get("orderId", "") or "")
+
+                if not order_id or not (reduce_only or close_on_trigger):
+                    continue
+
+                self._api_call(
+                    self.session.cancel_order,
+                    category=self.CATEGORY,
+                    symbol=symbol,
+                    orderId=order_id,
+                )
+                time.sleep(self.request_delay)
         except Exception as e:
             self.logger.debug(f"[{symbol}] Failed to cancel existing TPs: {e}")
     # =========================================================================

@@ -116,6 +116,23 @@ class SMCAnalyzer:
             and htf_dir == ltf_poi.get("side")
         )
 
+        is_pd_aligned = False
+        has_liquidity_target = False
+
+        if smc_ok and ltf_poi and htf_pd_zones:
+            poi_price = float(ltf_poi.get("price", ltf_poi.get("mid", 0.0)) or 0.0)
+            eq_price = float(htf_pd_zones.get("equilibrium", 0.0) or 0.0)
+
+            if htf_dir == "LONG" and eq_price > 0 and poi_price < eq_price:
+                is_pd_aligned = True
+            elif htf_dir == "SHORT" and eq_price > 0 and poi_price > eq_price:
+                is_pd_aligned = True
+
+            if htf_dir == "LONG" and ltf_liquidity.get("has_eqh", False):
+                has_liquidity_target = True
+            elif htf_dir == "SHORT" and ltf_liquidity.get("has_eql", False):
+                has_liquidity_target = True
+
         return {
             "htf_structure": htf_structure,
             "ltf_structure": ltf_structure,
@@ -124,5 +141,9 @@ class SMCAnalyzer:
             "liquidity": ltf_liquidity,
             "mtf_aligned": mtf_aligned,
             "smc_ok": smc_ok,
-            "direction": htf_dir
+            "direction": htf_dir,
+            "is_pd_aligned": is_pd_aligned,
+            "has_liquidity_target": has_liquidity_target,
+            "has_eqh": ltf_liquidity.get("has_eqh", False),
+            "has_eql": ltf_liquidity.get("has_eql", False),
         }
