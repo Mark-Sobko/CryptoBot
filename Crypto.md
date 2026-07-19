@@ -35,14 +35,17 @@
 ├── logs
 │   └── runtime logs (ignored by git)
 ├── main.py
+├── requirements-lock.txt
 ├── requirements.txt
 ├── scripts
 │   ├── run_bybit_demo_lifecycle.py
-│   └── run_paper_lifecycle.py
+│   ├── run_paper_lifecycle.py
+│   └── secret_scan.py
 ├── tests
 │   ├── test_bybit_demo_lifecycle.py
 │   ├── test_execution_safety.py
-│   └── test_paper_lifecycle.py
+│   ├── test_paper_lifecycle.py
+│   └── test_secret_scan.py
 
 Safe lifecycle checks:
 
@@ -56,3 +59,15 @@ python3 scripts/run_paper_lifecycle.py --db /tmp/cryptobot_paper_lifecycle.db --
 failures, partial reduce-only close, reduce-only TP, stop-loss set/clear,
 restart recovery sync, and a best-effort partial-fill probe that always cleans
 up its own orders/positions.
+
+CI and security checks:
+
+```bash
+.venv/bin/python scripts/secret_scan.py --history
+.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python -m compileall -q core engine tests scripts main.py config.py analyze_trades.py
+```
+
+GitHub Actions installs from `requirements-lock.txt`, runs `pip check`, scans
+the full fetched history for secrets/runtime artifacts, compiles sources, and
+runs the unit test suite.
