@@ -113,6 +113,15 @@ def summarize_place_attempts(attempts: list[tuple[int, Any]]) -> list[dict[str, 
     ]
 
 
+def classify_probe_error(error: str) -> str:
+    normalized = error.lower()
+    if "110126" in normalized or "required agreement" in normalized:
+        return "agreement_required"
+    if "position idx not match" in normalized:
+        return "position_mode_mismatch"
+    return "probe_error"
+
+
 def get_instrument(session: HTTP, symbol: str) -> dict[str, Decimal]:
     res = api_call(session.get_instruments_info, category=CATEGORY, symbol=symbol)
     items = res.get("result", {}).get("list", [])
@@ -370,6 +379,11 @@ def orderbook_limit_for(price_levels: int, requested_depth: int) -> int:
     return max(50, price_levels, requested_depth)
 
 
+def price_level_sweep(price_levels: int) -> list[int]:
+    deepest = max(1, price_levels)
+    return list(range(deepest, 0, -1))
+
+
 def unique_symbols(symbols: list[str]) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
@@ -516,16 +530,22 @@ def discover_partial_fill_candidates(
                 limit=orderbook_limit_for(price_levels, orderbook_depth),
             )
             ask_price, ask_size = levels[0]
-            plan = plan_partial_fill_order(
-                instrument=instrument,
-                ask_price=ask_price,
-                ask_size=ask_size,
-                max_notional=max_notional,
-                target_notional_pct=target_notional_pct,
-                ask_levels=levels,
-                price_levels=price_levels,
-            )
-            if not plan.get("eligible"):
+            plan = None
+            for candidate_price_levels in price_level_sweep(price_levels):
+                candidate_plan = plan_partial_fill_order(
+                    instrument=instrument,
+                    ask_price=ask_price,
+                    ask_size=ask_size,
+                    max_notional=max_notional,
+                    target_notional_pct=target_notional_pct,
+                    ask_levels=levels,
+                    price_levels=candidate_price_levels,
+                )
+                if candidate_plan.get("eligible"):
+                    plan = candidate_plan
+                    break
+
+            if plan is None:
                 continue
 
             candidates.append(
@@ -555,6 +575,7 @@ def run_partial_fill_probe(
     target_notional_pct: Decimal,
     price_levels: int,
     orderbook_depth: int,
+    candidate_plans: dict[str, dict[str, Any]] | None = None,
     prefix: str,
     wait_s: float,
 ) -> dict[str, Any]:
@@ -569,10 +590,12 @@ def run_partial_fill_probe(
                 continue
 
             instrument = get_instrument(session, symbol)
+            symbol_plan = (candidate_plans or {}).get(symbol)
+            symbol_price_levels = int(symbol_plan.get("price_levels", price_levels)) if symbol_plan else price_levels
             levels = get_ask_levels(
                 session,
                 symbol,
-                limit=orderbook_limit_for(price_levels, orderbook_depth),
+                limit=orderbook_limit_for(symbol_price_levels, orderbook_depth),
             )
             top_ask_price, top_ask_size = levels[0]
             plan = plan_partial_fill_order(
@@ -582,7 +605,7 @@ def run_partial_fill_probe(
                 max_notional=max_notional,
                 target_notional_pct=target_notional_pct,
                 ask_levels=levels,
-                price_levels=price_levels,
+                price_levels=symbol_price_levels,
             )
 
             if not plan.get("eligible"):
@@ -656,7 +679,7 @@ def run_partial_fill_probe(
             except Exception:
                 pass
             error = str(exc)
-            reason = "position_mode_mismatch" if "position idx not match" in error else "probe_error"
+            reason = classify_probe_error(error)
             skipped.append({"symbol": symbol, "reason": reason, "error": error[:240]})
 
     return {
@@ -867,6 +890,7 @@ def main() -> int:
                 [item["symbol"] for item in discovery]
                 + partial_symbols
             )
+            candidate_plans = {str(item["symbol"]).upper(): item for item in discovery}
             summary["steps"].append(
                 run_partial_fill_probe(
                     session,
@@ -875,6 +899,7 @@ def main() -> int:
                     target_notional_pct=args.partial_fill_target_notional_pct,
                     price_levels=args.partial_fill_price_levels,
                     orderbook_depth=args.partial_fill_orderbook_depth,
+                    candidate_plans=candidate_plans,
                     prefix=prefix,
                     wait_s=args.wait,
                 )

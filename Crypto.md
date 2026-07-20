@@ -64,7 +64,8 @@ restart recovery sync, and a best-effort partial-fill probe that always cleans
 up its own orders/positions. The probe-only mode dynamically ranks low-notional
 USDT instruments by visible orderbook size, attempts a capped demo/testnet
 partial fill near `--max-notional * --partial-fill-target-notional-pct`, can
-cross multiple ask levels with `--partial-fill-price-levels`, and exits before
+cross multiple ask levels with `--partial-fill-price-levels`, sweeps down to
+shallower levels when deeper visible liquidity exceeds the cap, and exits before
 the broader lifecycle.
 
 CI and security checks:

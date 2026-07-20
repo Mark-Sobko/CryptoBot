@@ -140,10 +140,73 @@ class BybitDemoLifecycleHelperTests(unittest.TestCase):
         self.assertEqual(plan["target_qty"], "8.6")
 
     def test_orderbook_limit_uses_bybit_depth_bucket_for_multi_level_probe(self):
-        from scripts.run_bybit_demo_lifecycle import orderbook_limit_for
+        from scripts.run_bybit_demo_lifecycle import orderbook_limit_for, price_level_sweep
 
         self.assertEqual(orderbook_limit_for(price_levels=1, requested_depth=50), 1)
         self.assertEqual(orderbook_limit_for(price_levels=5, requested_depth=10), 50)
+        self.assertEqual(price_level_sweep(5), [5, 4, 3, 2, 1])
+
+    def test_probe_error_classification_prioritizes_agreement_required(self):
+        from scripts.run_bybit_demo_lifecycle import classify_probe_error
+
+        error = "ErrCode: 110126 required agreement; position idx not match position mode"
+
+        self.assertEqual(classify_probe_error(error), "agreement_required")
+        self.assertEqual(classify_probe_error("position idx not match position mode"), "position_mode_mismatch")
+
+    def test_discovery_sweeps_to_lower_price_levels_when_deep_book_exceeds_cap(self):
+        from scripts.run_bybit_demo_lifecycle import discover_partial_fill_candidates
+
+        class FakeSession:
+            def get_tickers(self, **kwargs):
+                return {
+                    "retCode": 0,
+                    "result": {"list": [{"symbol": "DEEPUSDT", "turnover24h": "1"}]},
+                }
+
+            def get_instruments_info(self, **kwargs):
+                return {
+                    "retCode": 0,
+                    "result": {
+                        "list": [
+                            {
+                                "priceFilter": {"tickSize": "0.1"},
+                                "lotSizeFilter": {
+                                    "qtyStep": "0.1",
+                                    "minOrderQty": "0.1",
+                                    "minNotionalValue": "5",
+                                },
+                            }
+                        ]
+                    },
+                }
+
+            def get_orderbook(self, **kwargs):
+                return {
+                    "retCode": 0,
+                    "result": {
+                        "a": [
+                            ["1.0", "3"],
+                            ["1.1", "3"],
+                            ["1.2", "20"],
+                        ]
+                    },
+                }
+
+        candidates = discover_partial_fill_candidates(
+            FakeSession(),
+            max_notional=Decimal("15"),
+            limit=1,
+            max_scan=10,
+            target_notional_pct=Decimal("0.95"),
+            price_levels=3,
+            orderbook_depth=50,
+        )
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["symbol"], "DEEPUSDT")
+        self.assertEqual(candidates[0]["price_levels"], "2")
+        self.assertEqual(candidates[0]["ask_price"], "1.1")
 
     def test_position_idx_candidates_prefer_visible_position_mode(self):
         from scripts.run_bybit_demo_lifecycle import position_idx_candidates
