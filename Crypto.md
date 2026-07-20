@@ -54,6 +54,7 @@ python3 scripts/run_paper_lifecycle.py --db /tmp/cryptobot_paper_lifecycle.db --
 python3 scripts/run_paper_lifecycle.py --db /tmp/cryptobot_paper_partial_lifecycle.db --reset-db --partial-fill-recovery
 .venv/bin/python scripts/run_bybit_demo_lifecycle.py --symbol XRPUSDT --max-notional 15 --wait 20
 .venv/bin/python scripts/run_bybit_demo_lifecycle.py --partial-fill-probe-only --max-notional 15 --wait 8 --partial-fill-dynamic-candidates 10 --partial-fill-max-scan 100 --partial-fill-target-notional-pct 0.95
+.venv/bin/python scripts/run_bybit_demo_lifecycle.py --partial-fill-probe-only --max-notional 25 --wait 8 --partial-fill-dynamic-candidates 10 --partial-fill-max-scan 150 --partial-fill-target-notional-pct 0.95 --partial-fill-price-levels 5 --partial-fill-orderbook-depth 50
 ```
 
 `run_bybit_demo_lifecycle.py` fails closed unless `BYBIT_DEMO=true` or
@@ -61,9 +62,10 @@ python3 scripts/run_paper_lifecycle.py --db /tmp/cryptobot_paper_partial_lifecyc
 failures, partial reduce-only close, reduce-only TP, stop-loss set/clear,
 restart recovery sync, and a best-effort partial-fill probe that always cleans
 up its own orders/positions. The probe-only mode dynamically ranks low-notional
-USDT instruments by top-of-book size, attempts a capped demo/testnet partial
-fill near `--max-notional * --partial-fill-target-notional-pct`, and exits
-before the broader lifecycle.
+USDT instruments by visible orderbook size, attempts a capped demo/testnet
+partial fill near `--max-notional * --partial-fill-target-notional-pct`, can
+cross multiple ask levels with `--partial-fill-price-levels`, and exits before
+the broader lifecycle.
 
 CI and security checks:
 

@@ -106,6 +106,13 @@ def summarize_failure(result: dict[str, Any] | str) -> dict[str, Any]:
     return {"exception": first_line[:220]}
 
 
+def summarize_place_attempts(attempts: list[tuple[int, Any]]) -> list[dict[str, Any]]:
+    return [
+        {"position_idx": position_idx, **summarize_failure(result)}
+        for position_idx, result in attempts
+    ]
+
+
 def get_instrument(session: HTTP, symbol: str) -> dict[str, Decimal]:
     res = api_call(session.get_instruments_info, category=CATEGORY, symbol=symbol)
     items = res.get("result", {}).get("list", [])
@@ -147,6 +154,47 @@ def get_positions(session: HTTP, symbol: str) -> list[dict[str, Any]]:
         if decimal_from(item.get("size")) > 0:
             positions.append(item)
     return positions
+
+
+def get_raw_positions(session: HTTP, symbol: str) -> list[dict[str, Any]]:
+    res = api_call(session.get_positions, category=CATEGORY, symbol=symbol)
+    return list(res.get("result", {}).get("list", []))
+
+
+def position_idx_candidates(session: HTTP, symbol: str, side: str) -> list[int]:
+    side = side.capitalize()
+    fallback = [1, 0] if side == "Buy" else [2, 0]
+
+    try:
+        raw_positions = get_raw_positions(session, symbol)
+    except Exception:
+        return fallback
+
+    indexes: list[int] = []
+    for item in raw_positions:
+        position_idx = int(item.get("positionIdx", 0) or 0)
+        item_side = str(item.get("side", "") or "").capitalize()
+
+        if position_idx == 0:
+            indexes.append(0)
+        elif side == "Buy" and position_idx == 1:
+            indexes.append(1)
+        elif side == "Sell" and position_idx == 2:
+            indexes.append(2)
+        elif not item_side and position_idx in fallback:
+            indexes.append(position_idx)
+
+    for position_idx in fallback:
+        indexes.append(position_idx)
+
+    result: list[int] = []
+    seen: set[int] = set()
+    for position_idx in indexes:
+        if position_idx in seen:
+            continue
+        seen.add(position_idx)
+        result.append(position_idx)
+    return result
 
 
 def wait_for_position(
@@ -257,12 +305,13 @@ def place_far_limit_with_mode_fallback(
     qty: Decimal,
     price: Decimal,
     order_link_id: str,
+    side: str = "Buy",
     time_in_force: str = "PostOnly",
 ) -> tuple[int, str]:
     base = {
         "category": CATEGORY,
         "symbol": symbol,
-        "side": "Buy",
+        "side": side,
         "orderType": "Limit",
         "qty": decimal_to_str(qty),
         "price": decimal_to_str(price),
@@ -271,7 +320,7 @@ def place_far_limit_with_mode_fallback(
     }
 
     attempts: list[tuple[int, Any]] = []
-    for position_idx in (0, 1):
+    for position_idx in position_idx_candidates(session, symbol, side):
         ok, result = try_place_order(session, **base, positionIdx=position_idx)
         attempts.append((position_idx, result))
         if ok:
@@ -280,7 +329,10 @@ def place_far_limit_with_mode_fallback(
                 raise LifecycleError("limit order placed but orderId missing")
             return position_idx, order_id
 
-    raise LifecycleError(f"failed to place limit order in one-way or hedge mode: {attempts}")
+    raise LifecycleError(
+        "failed to place limit order in one-way or hedge mode: "
+        f"{summarize_place_attempts(attempts)}"
+    )
 
 
 def find_order(session: HTTP, symbol: str, order_id: str) -> dict[str, Any] | None:
@@ -290,13 +342,32 @@ def find_order(session: HTTP, symbol: str, order_id: str) -> dict[str, Any] | No
     return None
 
 
-def get_top_ask(session: HTTP, symbol: str) -> tuple[Decimal, Decimal]:
-    res = api_call(session.get_orderbook, category=CATEGORY, symbol=symbol, limit=1)
+def get_ask_levels(session: HTTP, symbol: str, *, limit: int = 1) -> list[tuple[Decimal, Decimal]]:
+    res = api_call(session.get_orderbook, category=CATEGORY, symbol=symbol, limit=limit)
     asks = res.get("result", {}).get("a", [])
     if not asks:
         raise LifecycleError(f"{symbol}: orderbook ask side is empty")
-    ask = asks[0]
-    return decimal_from(ask[0]), decimal_from(ask[1])
+
+    levels: list[tuple[Decimal, Decimal]] = []
+    for ask in asks:
+        price = decimal_from(ask[0])
+        size = decimal_from(ask[1])
+        if price > 0 and size > 0:
+            levels.append((price, size))
+
+    if not levels:
+        raise LifecycleError(f"{symbol}: orderbook ask side has no positive levels")
+    return levels
+
+
+def get_top_ask(session: HTTP, symbol: str) -> tuple[Decimal, Decimal]:
+    return get_ask_levels(session, symbol, limit=1)[0]
+
+
+def orderbook_limit_for(price_levels: int, requested_depth: int) -> int:
+    if price_levels <= 1:
+        return 1
+    return max(50, price_levels, requested_depth)
 
 
 def unique_symbols(symbols: list[str]) -> list[str]:
@@ -324,11 +395,23 @@ def plan_partial_fill_order(
     ask_size: Decimal,
     max_notional: Decimal,
     target_notional_pct: Decimal = Decimal("0.95"),
+    ask_levels: list[tuple[Decimal, Decimal]] | None = None,
+    price_levels: int = 1,
 ) -> dict[str, Any]:
     qty_step = instrument["qty_step"]
     min_notional = instrument["min_notional"]
     min_qty = instrument["min_qty"]
-    ask_notional = ask_size * ask_price
+
+    selected_levels: list[tuple[Decimal, Decimal]] = []
+    if ask_levels:
+        selected_count = max(1, min(price_levels, len(ask_levels)))
+        selected_levels = ask_levels[:selected_count]
+        ask_price = selected_levels[-1][0]
+        ask_size = sum((size for _, size in selected_levels), Decimal("0"))
+
+    ask_notional = sum((price * size for price, size in selected_levels), Decimal("0"))
+    if ask_notional <= 0:
+        ask_notional = ask_size * ask_price
 
     if ask_price <= 0 or ask_size <= 0:
         return {
@@ -358,6 +441,8 @@ def plan_partial_fill_order(
             "ask_notional": decimal_to_str(ask_notional),
             "required_notional": decimal_to_str(notional),
             "target_qty": decimal_to_str(target_qty),
+            "limit_price": decimal_to_str(ask_price),
+            "visible_qty": decimal_to_str(ask_size),
         }
 
     if notional > max_notional:
@@ -367,6 +452,8 @@ def plan_partial_fill_order(
             "ask_notional": decimal_to_str(ask_notional),
             "required_notional": decimal_to_str(notional),
             "target_qty": decimal_to_str(target_qty),
+            "limit_price": decimal_to_str(ask_price),
+            "visible_qty": decimal_to_str(ask_size),
         }
 
     return {
@@ -374,6 +461,9 @@ def plan_partial_fill_order(
         "ask_notional": decimal_to_str(ask_notional),
         "required_notional": decimal_to_str(notional),
         "target_qty": decimal_to_str(target_qty),
+        "limit_price": decimal_to_str(ask_price),
+        "visible_qty": decimal_to_str(ask_size),
+        "price_levels": str(max(1, min(price_levels, len(ask_levels) if ask_levels else 1))),
     }
 
 
@@ -394,6 +484,8 @@ def discover_partial_fill_candidates(
     limit: int,
     max_scan: int,
     target_notional_pct: Decimal,
+    price_levels: int,
+    orderbook_depth: int,
     quote_suffix: str = "USDT",
 ) -> list[dict[str, Any]]:
     if limit <= 0 or max_scan <= 0:
@@ -418,13 +510,20 @@ def discover_partial_fill_candidates(
         scanned += 1
         try:
             instrument = get_instrument(session, symbol)
-            ask_price, ask_size = get_top_ask(session, symbol)
+            levels = get_ask_levels(
+                session,
+                symbol,
+                limit=orderbook_limit_for(price_levels, orderbook_depth),
+            )
+            ask_price, ask_size = levels[0]
             plan = plan_partial_fill_order(
                 instrument=instrument,
                 ask_price=ask_price,
                 ask_size=ask_size,
                 max_notional=max_notional,
                 target_notional_pct=target_notional_pct,
+                ask_levels=levels,
+                price_levels=price_levels,
             )
             if not plan.get("eligible"):
                 continue
@@ -432,11 +531,14 @@ def discover_partial_fill_candidates(
             candidates.append(
                 {
                     "symbol": symbol,
-                    "ask_price": decimal_to_str(ask_price),
+                    "ask_price": plan["limit_price"],
+                    "top_ask_price": decimal_to_str(ask_price),
                     "top_ask_qty": decimal_to_str(ask_size),
+                    "visible_qty": plan["visible_qty"],
                     "ask_notional": plan["ask_notional"],
                     "required_notional": plan["required_notional"],
                     "target_qty": plan["target_qty"],
+                    "price_levels": plan["price_levels"],
                 }
             )
         except Exception:
@@ -451,6 +553,8 @@ def run_partial_fill_probe(
     symbols: list[str],
     max_notional: Decimal,
     target_notional_pct: Decimal,
+    price_levels: int,
+    orderbook_depth: int,
     prefix: str,
     wait_s: float,
 ) -> dict[str, Any]:
@@ -465,13 +569,20 @@ def run_partial_fill_probe(
                 continue
 
             instrument = get_instrument(session, symbol)
-            ask_price, ask_size = get_top_ask(session, symbol)
+            levels = get_ask_levels(
+                session,
+                symbol,
+                limit=orderbook_limit_for(price_levels, orderbook_depth),
+            )
+            top_ask_price, top_ask_size = levels[0]
             plan = plan_partial_fill_order(
                 instrument=instrument,
-                ask_price=ask_price,
-                ask_size=ask_size,
+                ask_price=top_ask_price,
+                ask_size=top_ask_size,
                 max_notional=max_notional,
                 target_notional_pct=target_notional_pct,
+                ask_levels=levels,
+                price_levels=price_levels,
             )
 
             if not plan.get("eligible"):
@@ -481,17 +592,20 @@ def run_partial_fill_probe(
                         "reason": plan.get("reason", "not_eligible"),
                         "ask_notional": plan.get("ask_notional"),
                         "required_notional": plan.get("required_notional"),
+                        "visible_qty": plan.get("visible_qty"),
+                        "limit_price": plan.get("limit_price"),
                     }
                 )
                 continue
 
             target_qty = decimal_from(plan["target_qty"])
+            limit_price = decimal_from(plan["limit_price"])
             order_link_id = f"{prefix}-pf-{symbol}"[:36]
             position_idx, order_id = place_far_limit_with_mode_fallback(
                 session,
                 symbol=symbol,
                 qty=target_qty,
-                price=ask_price,
+                price=limit_price,
                 order_link_id=order_link_id,
                 time_in_force="GTC",
             )
@@ -518,8 +632,11 @@ def run_partial_fill_probe(
                 "symbol": symbol,
                 "position_idx": position_idx,
                 "order_id": order_id,
-                "ask_price": decimal_to_str(ask_price),
-                "top_ask_qty": decimal_to_str(ask_size),
+                "ask_price": decimal_to_str(limit_price),
+                "top_ask_price": decimal_to_str(top_ask_price),
+                "top_ask_qty": decimal_to_str(top_ask_size),
+                "visible_qty": plan["visible_qty"],
+                "price_levels": plan["price_levels"],
                 "order_qty": decimal_to_str(target_qty),
                 "filled_qty": decimal_to_str(filled_qty),
                 "remaining_qty": decimal_to_str(remaining_qty),
@@ -538,7 +655,9 @@ def run_partial_fill_probe(
                 close_open_positions(session, symbol)
             except Exception:
                 pass
-            skipped.append({"symbol": symbol, "reason": "probe_error", "error": str(exc)[:180]})
+            error = str(exc)
+            reason = "position_mode_mismatch" if "position idx not match" in error else "probe_error"
+            skipped.append({"symbol": symbol, "reason": reason, "error": error[:240]})
 
     return {
         "name": "partial_fill_probe",
@@ -692,6 +811,8 @@ def main() -> int:
     parser.add_argument("--partial-fill-dynamic-candidates", type=int, default=8)
     parser.add_argument("--partial-fill-max-scan", type=int, default=80)
     parser.add_argument("--partial-fill-target-notional-pct", type=Decimal, default=Decimal("0.95"))
+    parser.add_argument("--partial-fill-price-levels", type=int, default=1)
+    parser.add_argument("--partial-fill-orderbook-depth", type=int, default=50)
     parser.add_argument("--partial-fill-probe-only", action="store_true")
     parser.add_argument("--skip-partial-close", action="store_true")
     parser.add_argument("--skip-partial-fill-probe", action="store_true")
@@ -732,6 +853,8 @@ def main() -> int:
                     limit=args.partial_fill_dynamic_candidates,
                     max_scan=args.partial_fill_max_scan,
                     target_notional_pct=args.partial_fill_target_notional_pct,
+                    price_levels=args.partial_fill_price_levels,
+                    orderbook_depth=args.partial_fill_orderbook_depth,
                 )
                 summary["steps"].append(
                     {
@@ -750,6 +873,8 @@ def main() -> int:
                     symbols=partial_symbols,
                     max_notional=args.max_notional,
                     target_notional_pct=args.partial_fill_target_notional_pct,
+                    price_levels=args.partial_fill_price_levels,
+                    orderbook_depth=args.partial_fill_orderbook_depth,
                     prefix=prefix,
                     wait_s=args.wait,
                 )

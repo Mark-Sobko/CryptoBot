@@ -113,6 +113,56 @@ class BybitDemoLifecycleHelperTests(unittest.TestCase):
         self.assertEqual(plan["target_qty"], "5")
         self.assertEqual(plan["required_notional"], "5")
 
+    def test_partial_fill_order_plan_can_use_multiple_ask_levels(self):
+        from scripts.run_bybit_demo_lifecycle import plan_partial_fill_order
+
+        plan = plan_partial_fill_order(
+            instrument={
+                "min_qty": Decimal("1"),
+                "qty_step": Decimal("0.1"),
+                "min_notional": Decimal("5"),
+            },
+            ask_price=Decimal("1.00"),
+            ask_size=Decimal("3"),
+            ask_levels=[
+                (Decimal("1.00"), Decimal("3")),
+                (Decimal("1.10"), Decimal("2")),
+            ],
+            price_levels=2,
+            max_notional=Decimal("10"),
+            target_notional_pct=Decimal("0.95"),
+        )
+
+        self.assertTrue(plan["eligible"])
+        self.assertEqual(plan["limit_price"], "1.1")
+        self.assertEqual(plan["visible_qty"], "5")
+        self.assertEqual(plan["price_levels"], "2")
+        self.assertEqual(plan["target_qty"], "8.6")
+
+    def test_orderbook_limit_uses_bybit_depth_bucket_for_multi_level_probe(self):
+        from scripts.run_bybit_demo_lifecycle import orderbook_limit_for
+
+        self.assertEqual(orderbook_limit_for(price_levels=1, requested_depth=50), 1)
+        self.assertEqual(orderbook_limit_for(price_levels=5, requested_depth=10), 50)
+
+    def test_position_idx_candidates_prefer_visible_position_mode(self):
+        from scripts.run_bybit_demo_lifecycle import position_idx_candidates
+
+        class FakeSession:
+            def get_positions(self, **kwargs):
+                return {
+                    "retCode": 0,
+                    "result": {
+                        "list": [
+                            {"positionIdx": 1, "side": "Buy"},
+                            {"positionIdx": 2, "side": "Sell"},
+                        ]
+                    },
+                }
+
+        self.assertEqual(position_idx_candidates(FakeSession(), "BTCUSDT", "Buy"), [1, 0])
+        self.assertEqual(position_idx_candidates(FakeSession(), "BTCUSDT", "Sell"), [2, 0])
+
     def test_parse_symbol_csv_deduplicates_and_normalizes(self):
         from scripts.run_bybit_demo_lifecycle import parse_symbol_csv, unique_symbols
 
