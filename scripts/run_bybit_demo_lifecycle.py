@@ -323,6 +323,7 @@ def plan_partial_fill_order(
     ask_price: Decimal,
     ask_size: Decimal,
     max_notional: Decimal,
+    target_notional_pct: Decimal = Decimal("0.95"),
 ) -> dict[str, Any]:
     qty_step = instrument["qty_step"]
     min_notional = instrument["min_notional"]
@@ -336,7 +337,13 @@ def plan_partial_fill_order(
             "ask_notional": decimal_to_str(ask_notional),
         }
 
-    target_qty = round_step(max(ask_size + qty_step, ask_size * Decimal("1.20")), qty_step, "up")
+    pct = max(Decimal("0.01"), min(Decimal("1"), target_notional_pct))
+    target_notional = max_notional * pct
+    target_qty = round_step(target_notional / ask_price, qty_step, "down")
+
+    minimum_partial_qty = round_step(ask_size + qty_step, qty_step, "up")
+    target_qty = max(target_qty, minimum_partial_qty)
+
     if target_qty < min_qty:
         target_qty = min_qty
 
@@ -344,6 +351,15 @@ def plan_partial_fill_order(
         target_qty = round_step((min_notional / ask_price) * Decimal("1.05"), qty_step, "up")
 
     notional = target_qty * ask_price
+    if target_qty <= ask_size:
+        return {
+            "eligible": False,
+            "reason": "top_ask_too_large",
+            "ask_notional": decimal_to_str(ask_notional),
+            "required_notional": decimal_to_str(notional),
+            "target_qty": decimal_to_str(target_qty),
+        }
+
     if notional > max_notional:
         return {
             "eligible": False,
@@ -377,6 +393,7 @@ def discover_partial_fill_candidates(
     max_notional: Decimal,
     limit: int,
     max_scan: int,
+    target_notional_pct: Decimal,
     quote_suffix: str = "USDT",
 ) -> list[dict[str, Any]]:
     if limit <= 0 or max_scan <= 0:
@@ -407,6 +424,7 @@ def discover_partial_fill_candidates(
                 ask_price=ask_price,
                 ask_size=ask_size,
                 max_notional=max_notional,
+                target_notional_pct=target_notional_pct,
             )
             if not plan.get("eligible"):
                 continue
@@ -432,6 +450,7 @@ def run_partial_fill_probe(
     *,
     symbols: list[str],
     max_notional: Decimal,
+    target_notional_pct: Decimal,
     prefix: str,
     wait_s: float,
 ) -> dict[str, Any]:
@@ -452,6 +471,7 @@ def run_partial_fill_probe(
                 ask_price=ask_price,
                 ask_size=ask_size,
                 max_notional=max_notional,
+                target_notional_pct=target_notional_pct,
             )
 
             if not plan.get("eligible"):
@@ -671,6 +691,7 @@ def main() -> int:
     parser.add_argument("--partial-fill-symbols", default="WIFUSDT,NEARUSDT,RENDERUSDT,OPUSDT")
     parser.add_argument("--partial-fill-dynamic-candidates", type=int, default=8)
     parser.add_argument("--partial-fill-max-scan", type=int, default=80)
+    parser.add_argument("--partial-fill-target-notional-pct", type=Decimal, default=Decimal("0.95"))
     parser.add_argument("--partial-fill-probe-only", action="store_true")
     parser.add_argument("--skip-partial-close", action="store_true")
     parser.add_argument("--skip-partial-fill-probe", action="store_true")
@@ -710,6 +731,7 @@ def main() -> int:
                     max_notional=args.max_notional,
                     limit=args.partial_fill_dynamic_candidates,
                     max_scan=args.partial_fill_max_scan,
+                    target_notional_pct=args.partial_fill_target_notional_pct,
                 )
                 summary["steps"].append(
                     {
@@ -727,6 +749,7 @@ def main() -> int:
                     session,
                     symbols=partial_symbols,
                     max_notional=args.max_notional,
+                    target_notional_pct=args.partial_fill_target_notional_pct,
                     prefix=prefix,
                     wait_s=args.wait,
                 )
