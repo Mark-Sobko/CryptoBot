@@ -25,7 +25,6 @@ if str(ROOT_DIR) not in sys.path:
 import config
 from core.database import TradeDatabase
 from core.database_sync import DatabaseSync
-from core.exchange import ExchangeManager
 
 
 CATEGORY = "linear"
@@ -300,6 +299,134 @@ def get_top_ask(session: HTTP, symbol: str) -> tuple[Decimal, Decimal]:
     return decimal_from(ask[0]), decimal_from(ask[1])
 
 
+def unique_symbols(symbols: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+
+    for symbol in symbols:
+        clean = str(symbol).strip().upper()
+        if not clean or clean in seen:
+            continue
+        seen.add(clean)
+        result.append(clean)
+
+    return result
+
+
+def parse_symbol_csv(value: str) -> list[str]:
+    return unique_symbols([item for item in str(value or "").split(",") if item.strip()])
+
+
+def plan_partial_fill_order(
+    *,
+    instrument: dict[str, Decimal],
+    ask_price: Decimal,
+    ask_size: Decimal,
+    max_notional: Decimal,
+) -> dict[str, Any]:
+    qty_step = instrument["qty_step"]
+    min_notional = instrument["min_notional"]
+    min_qty = instrument["min_qty"]
+    ask_notional = ask_size * ask_price
+
+    if ask_price <= 0 or ask_size <= 0:
+        return {
+            "eligible": False,
+            "reason": "empty_top_ask",
+            "ask_notional": decimal_to_str(ask_notional),
+        }
+
+    target_qty = round_step(max(ask_size + qty_step, ask_size * Decimal("1.20")), qty_step, "up")
+    if target_qty < min_qty:
+        target_qty = min_qty
+
+    if min_notional > 0 and target_qty * ask_price < min_notional:
+        target_qty = round_step((min_notional / ask_price) * Decimal("1.05"), qty_step, "up")
+
+    notional = target_qty * ask_price
+    if notional > max_notional:
+        return {
+            "eligible": False,
+            "reason": "top_ask_too_large",
+            "ask_notional": decimal_to_str(ask_notional),
+            "required_notional": decimal_to_str(notional),
+            "target_qty": decimal_to_str(target_qty),
+        }
+
+    return {
+        "eligible": True,
+        "ask_notional": decimal_to_str(ask_notional),
+        "required_notional": decimal_to_str(notional),
+        "target_qty": decimal_to_str(target_qty),
+    }
+
+
+def _ticker_turnover(item: dict[str, Any]) -> Decimal:
+    value = decimal_from(
+        item.get("turnover24h")
+        or item.get("volume24h")
+        or item.get("turnover")
+        or "0"
+    )
+    return value if value > 0 else Decimal("1E+50")
+
+
+def discover_partial_fill_candidates(
+    session: HTTP,
+    *,
+    max_notional: Decimal,
+    limit: int,
+    max_scan: int,
+    quote_suffix: str = "USDT",
+) -> list[dict[str, Any]]:
+    if limit <= 0 or max_scan <= 0:
+        return []
+
+    res = api_call(session.get_tickers, category=CATEGORY)
+    tickers = list(res.get("result", {}).get("list", []))
+    tickers = sorted(tickers, key=_ticker_turnover)
+
+    candidates: list[dict[str, Any]] = []
+    scanned = 0
+    quote_suffix = quote_suffix.upper()
+
+    for ticker in tickers:
+        if scanned >= max_scan or len(candidates) >= limit:
+            break
+
+        symbol = str(ticker.get("symbol", "")).upper()
+        if not symbol.endswith(quote_suffix):
+            continue
+
+        scanned += 1
+        try:
+            instrument = get_instrument(session, symbol)
+            ask_price, ask_size = get_top_ask(session, symbol)
+            plan = plan_partial_fill_order(
+                instrument=instrument,
+                ask_price=ask_price,
+                ask_size=ask_size,
+                max_notional=max_notional,
+            )
+            if not plan.get("eligible"):
+                continue
+
+            candidates.append(
+                {
+                    "symbol": symbol,
+                    "ask_price": decimal_to_str(ask_price),
+                    "top_ask_qty": decimal_to_str(ask_size),
+                    "ask_notional": plan["ask_notional"],
+                    "required_notional": plan["required_notional"],
+                    "target_qty": plan["target_qty"],
+                }
+            )
+        except Exception:
+            continue
+
+    return candidates
+
+
 def run_partial_fill_probe(
     session: HTTP,
     *,
@@ -320,30 +447,25 @@ def run_partial_fill_probe(
 
             instrument = get_instrument(session, symbol)
             ask_price, ask_size = get_top_ask(session, symbol)
-            qty_step = instrument["qty_step"]
-            min_notional = instrument["min_notional"]
-            min_qty = instrument["min_qty"]
+            plan = plan_partial_fill_order(
+                instrument=instrument,
+                ask_price=ask_price,
+                ask_size=ask_size,
+                max_notional=max_notional,
+            )
 
-            target_qty = round_step(max(ask_size + qty_step, ask_size * Decimal("1.20")), qty_step, "up")
-            if target_qty < min_qty:
-                target_qty = min_qty
-
-            if min_notional > 0 and target_qty * ask_price < min_notional:
-                target_qty = round_step((min_notional / ask_price) * Decimal("1.05"), qty_step, "up")
-
-            notional = target_qty * ask_price
-            ask_notional = ask_size * ask_price
-            if notional > max_notional:
+            if not plan.get("eligible"):
                 skipped.append(
                     {
                         "symbol": symbol,
-                        "reason": "top_ask_too_large",
-                        "ask_notional": decimal_to_str(ask_notional),
-                        "required_notional": decimal_to_str(notional),
+                        "reason": plan.get("reason", "not_eligible"),
+                        "ask_notional": plan.get("ask_notional"),
+                        "required_notional": plan.get("required_notional"),
                     }
                 )
                 continue
 
+            target_qty = decimal_from(plan["target_qty"])
             order_link_id = f"{prefix}-pf-{symbol}"[:36]
             position_idx, order_id = place_far_limit_with_mode_fallback(
                 session,
@@ -518,6 +640,8 @@ def run_restart_recovery(
     if db_sync._db is not None:
         db_sync._db.close()
 
+    from core.exchange import ExchangeManager
+
     exchange = ExchangeManager()
     restarted_db = TradeDatabase(str(db_path))
     exchange.sync_db_with_exchange(restarted_db)
@@ -544,6 +668,10 @@ def main() -> int:
     parser.add_argument("--symbol", default="XRPUSDT")
     parser.add_argument("--max-notional", type=Decimal, default=Decimal("25"))
     parser.add_argument("--wait", type=float, default=12.0)
+    parser.add_argument("--partial-fill-symbols", default="WIFUSDT,NEARUSDT,RENDERUSDT,OPUSDT")
+    parser.add_argument("--partial-fill-dynamic-candidates", type=int, default=8)
+    parser.add_argument("--partial-fill-max-scan", type=int, default=80)
+    parser.add_argument("--partial-fill-probe-only", action="store_true")
     parser.add_argument("--skip-partial-close", action="store_true")
     parser.add_argument("--skip-partial-fill-probe", action="store_true")
     args = parser.parse_args()
@@ -573,6 +701,42 @@ def main() -> int:
     }
 
     try:
+        partial_symbols = unique_symbols(parse_symbol_csv(args.partial_fill_symbols) + [symbol])
+        if not args.skip_partial_fill_probe:
+            discovery: list[dict[str, Any]] = []
+            if args.partial_fill_dynamic_candidates > 0:
+                discovery = discover_partial_fill_candidates(
+                    session,
+                    max_notional=args.max_notional,
+                    limit=args.partial_fill_dynamic_candidates,
+                    max_scan=args.partial_fill_max_scan,
+                )
+                summary["steps"].append(
+                    {
+                        "name": "partial_fill_candidate_discovery",
+                        "candidates": discovery,
+                    }
+                )
+
+            partial_symbols = unique_symbols(
+                [item["symbol"] for item in discovery]
+                + partial_symbols
+            )
+            summary["steps"].append(
+                run_partial_fill_probe(
+                    session,
+                    symbols=partial_symbols,
+                    max_notional=args.max_notional,
+                    prefix=prefix,
+                    wait_s=args.wait,
+                )
+            )
+
+            if args.partial_fill_probe_only:
+                summary["status"] = "OK"
+                print(json.dumps(summary, indent=2, sort_keys=True))
+                return 0
+
         if get_positions(session, symbol):
             raise LifecycleError(f"{symbol}: active position exists before lifecycle; aborting")
         if get_open_orders(session, symbol):
@@ -590,17 +754,6 @@ def main() -> int:
             args.max_notional,
             require_partial_close=not args.skip_partial_close,
         )
-
-        if not args.skip_partial_fill_probe:
-            summary["steps"].append(
-                run_partial_fill_probe(
-                    session,
-                    symbols=["WIFUSDT", "NEARUSDT", "RENDERUSDT", "OPUSDT", symbol],
-                    max_notional=args.max_notional,
-                    prefix=prefix,
-                    wait_s=args.wait,
-                )
-            )
 
         position_idx, pending_order_id = place_far_limit_with_mode_fallback(
             session,
@@ -820,12 +973,19 @@ def main() -> int:
         print(json.dumps(summary, indent=2, sort_keys=True))
         return 0
 
+    except LifecycleError as exc:
+        summary["status"] = "ERROR"
+        summary["error"] = str(exc)
+        print(json.dumps(summary, indent=2, sort_keys=True))
+        return 1
+
     finally:
         cleanup = {"prefix_orders_cancelled": 0, "positions_closed": 0}
-        try:
-            cleanup["prefix_orders_cancelled"] = cancel_prefix_orders(session, symbol, prefix)
-        except Exception as exc:
-            cleanup["prefix_order_cleanup_error"] = str(exc)
+        if not args.partial_fill_probe_only:
+            try:
+                cleanup["prefix_orders_cancelled"] = cancel_prefix_orders(session, symbol, prefix)
+            except Exception as exc:
+                cleanup["prefix_order_cleanup_error"] = str(exc)
 
         if opened_position:
             try:

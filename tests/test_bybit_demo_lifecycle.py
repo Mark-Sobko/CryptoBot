@@ -59,6 +59,47 @@ class BybitDemoLifecycleHelperTests(unittest.TestCase):
 
         self.assertEqual(summary["exception"], "first line")
 
+    def test_partial_fill_order_plan_respects_max_notional(self):
+        from scripts.run_bybit_demo_lifecycle import plan_partial_fill_order
+
+        plan = plan_partial_fill_order(
+            instrument={
+                "min_qty": Decimal("1"),
+                "qty_step": Decimal("0.1"),
+                "min_notional": Decimal("5"),
+            },
+            ask_price=Decimal("1.00"),
+            ask_size=Decimal("3"),
+            max_notional=Decimal("10"),
+        )
+
+        self.assertTrue(plan["eligible"])
+        self.assertEqual(plan["target_qty"], "5.3")
+        self.assertEqual(plan["required_notional"], "5.3")
+
+    def test_partial_fill_order_plan_rejects_large_top_ask(self):
+        from scripts.run_bybit_demo_lifecycle import plan_partial_fill_order
+
+        plan = plan_partial_fill_order(
+            instrument={
+                "min_qty": Decimal("1"),
+                "qty_step": Decimal("0.1"),
+                "min_notional": Decimal("5"),
+            },
+            ask_price=Decimal("2.00"),
+            ask_size=Decimal("20"),
+            max_notional=Decimal("10"),
+        )
+
+        self.assertFalse(plan["eligible"])
+        self.assertEqual(plan["reason"], "top_ask_too_large")
+
+    def test_parse_symbol_csv_deduplicates_and_normalizes(self):
+        from scripts.run_bybit_demo_lifecycle import parse_symbol_csv, unique_symbols
+
+        self.assertEqual(parse_symbol_csv(" opUSDT, OPUSDT, xrpUsdt "), ["OPUSDT", "XRPUSDT"])
+        self.assertEqual(unique_symbols(["btcusdt", "BTCUSDT", "", "ethusdt"]), ["BTCUSDT", "ETHUSDT"])
+
 
 if __name__ == "__main__":
     unittest.main()
