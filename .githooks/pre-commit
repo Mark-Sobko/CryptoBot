@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+
+ROOT_DIR="$(git rev-parse --show-toplevel)"
+cd "$ROOT_DIR"
+
+if [ -n "${PYTHON:-}" ]; then
+    PYTHON_BIN="$PYTHON"
+elif [ -x ".venv/bin/python" ]; then
+    PYTHON_BIN=".venv/bin/python"
+else
+    PYTHON_BIN="python3"
+fi
+
+exec "$PYTHON_BIN" scripts/pre_commit_checks.py

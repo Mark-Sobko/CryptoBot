@@ -91,6 +91,7 @@ class PaperBybitSession:
 
     def place_order(self, **kwargs) -> Dict[str, Any]:
         order_id = self._next_order_id("paper-order")
+        qty = str(kwargs["qty"])
         order = {
             "orderId": order_id,
             "orderLinkId": kwargs.get("orderLinkId", ""),
@@ -98,7 +99,9 @@ class PaperBybitSession:
             "side": kwargs["side"],
             "orderType": kwargs.get("orderType", "Market"),
             "orderStatus": "New",
-            "qty": str(kwargs["qty"]),
+            "qty": qty,
+            "cumExecQty": "0",
+            "leavesQty": qty,
             "price": str(kwargs.get("price", self.last_price)),
             "stopLoss": str(kwargs.get("stopLoss", "")),
             "takeProfit": str(kwargs.get("takeProfit", "")),
@@ -133,24 +136,42 @@ class PaperBybitSession:
         self.open_orders = [order for order in self.open_orders if order.get("orderId") != order_id]
         return self._ok({"orderId": order_id})
 
-    def fill_order(self, order_id: str) -> Optional[Dict[str, Any]]:
-        order = next((item for item in self.open_orders if item.get("orderId") == order_id), None)
-        if not order or order.get("reduceOnly"):
+    def _upsert_position_from_order(
+        self,
+        order: Dict[str, Any],
+        fill_qty: float,
+    ) -> Optional[Dict[str, Any]]:
+        fill_qty = float(fill_qty)
+        if fill_qty <= 0:
             return None
 
-        self.open_orders = [item for item in self.open_orders if item.get("orderId") != order_id]
-
         symbol = str(order["symbol"])
-        qty = float(order.get("qty", 0.0) or 0.0)
         entry_price = float(order.get("price", self.last_price) or self.last_price)
         side = str(order.get("side", "Buy"))
         stop_loss = float(order.get("stopLoss", 0.0) or 0.0)
         position_idx = int(order.get("positionIdx", 0) or (1 if side == "Buy" else 2))
 
+        existing = self.positions.get(symbol)
+        if existing:
+            old_size = float(existing.get("size", 0.0) or 0.0)
+            old_entry = float(existing.get("entryPrice", entry_price) or entry_price)
+            new_size = old_size + fill_qty
+            avg_entry = ((old_entry * old_size) + (entry_price * fill_qty)) / new_size
+            existing.update(
+                {
+                    "size": str(new_size),
+                    "entryPrice": str(avg_entry),
+                    "markPrice": str(self.last_price),
+                    "stopLoss": str(stop_loss or float(existing.get("stopLoss", 0.0) or 0.0)),
+                    "positionIdx": position_idx,
+                }
+            )
+            return existing
+
         position = {
             "symbol": symbol,
             "side": side,
-            "size": str(qty),
+            "size": str(fill_qty),
             "entryPrice": str(entry_price),
             "markPrice": str(self.last_price),
             "stopLoss": str(stop_loss),
@@ -159,10 +180,40 @@ class PaperBybitSession:
             "leverage": "1",
         }
         self.positions[symbol] = position
+        return position
 
+    def partially_fill_order(self, order_id: str, fill_qty: float) -> Optional[Dict[str, Any]]:
+        order = next((item for item in self.open_orders if item.get("orderId") == order_id), None)
+        if not order or order.get("reduceOnly"):
+            return None
+
+        total_qty = float(order.get("qty", 0.0) or 0.0)
+        already_filled = float(order.get("cumExecQty", 0.0) or 0.0)
+        remaining_before = max(total_qty - already_filled, 0.0)
+        actual_fill = min(float(fill_qty), remaining_before)
+        if actual_fill <= 0:
+            return None
+
+        position = self._upsert_position_from_order(order, actual_fill)
+        if position is None:
+            return None
+
+        filled_now = already_filled + actual_fill
+        leaves_qty = max(total_qty - filled_now, 0.0)
+
+        if leaves_qty > 0:
+            order["orderStatus"] = "PartiallyFilled"
+            order["cumExecQty"] = str(filled_now)
+            order["leavesQty"] = str(leaves_qty)
+        else:
+            self.open_orders = [item for item in self.open_orders if item.get("orderId") != order_id]
+
+        order_side = str(order.get("side", "Buy"))
         take_profit = str(order.get("takeProfit", "") or "")
         if take_profit:
-            tp_side = "Sell" if side == "Buy" else "Buy"
+            tp_side = "Sell" if order_side == "Buy" else "Buy"
+            symbol = str(order["symbol"])
+            position_idx = int(order.get("positionIdx", 0) or (1 if order_side == "Buy" else 2))
             self.open_orders.append(
                 {
                     "orderId": self._next_order_id("paper-system-tp"),
@@ -170,7 +221,9 @@ class PaperBybitSession:
                     "side": tp_side,
                     "orderType": "Limit",
                     "orderStatus": "New",
-                    "qty": str(qty),
+                    "qty": str(actual_fill),
+                    "cumExecQty": "0",
+                    "leavesQty": str(actual_fill),
                     "price": take_profit,
                     "reduceOnly": True,
                     "closeOnTrigger": True,
@@ -180,6 +233,15 @@ class PaperBybitSession:
             )
 
         return position
+
+    def fill_order(self, order_id: str) -> Optional[Dict[str, Any]]:
+        order = next((item for item in self.open_orders if item.get("orderId") == order_id), None)
+        if not order:
+            return None
+
+        total_qty = float(order.get("qty", 0.0) or 0.0)
+        already_filled = float(order.get("cumExecQty", 0.0) or 0.0)
+        return self.partially_fill_order(order_id, max(total_qty - already_filled, 0.0))
 
     def close_position(self, symbol: str, exit_price: float) -> Optional[Dict[str, Any]]:
         symbol = str(symbol).upper()

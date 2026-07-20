@@ -344,13 +344,77 @@ class TradeDatabase:
                 self.conn.commit()
 
                 if cursor.rowcount <= 0:
-                    return False
+                    return self._reconcile_open_trade(
+                        symbol=symbol,
+                        side=side,
+                        entry_price=entry_price,
+                        qty=qty,
+                        stop_loss=stop_loss,
+                    )
 
                 self.logger.info(f"💾 DATABASE | PENDING -> OPEN | {symbol}")
                 return True
             except Exception as e:
                 self.logger.error(f"❌ DB mark_trade_open failed for {symbol}: {e}", exc_info=True)
                 return False
+
+    def _reconcile_open_trade(
+        self,
+        symbol: str,
+        side: Optional[str] = None,
+        entry_price: Optional[float] = None,
+        qty: Optional[float] = None,
+        stop_loss: Optional[float] = None,
+    ) -> bool:
+        """Refresh the latest OPEN row from exchange-visible position state."""
+        updates: List[str] = []
+        params: List[Any] = []
+
+        if entry_price is not None and float(entry_price) > 0:
+            updates.append("entry_price = ?")
+            params.append(float(entry_price))
+
+        if qty is not None and float(qty) > 0:
+            updates.append("qty = ?")
+            params.append(float(qty))
+
+        if stop_loss is not None and float(stop_loss) > 0:
+            updates.append("stop_loss = ?")
+            params.append(float(stop_loss))
+
+        if not updates:
+            return False
+
+        if side:
+            where = """
+                id = (
+                    SELECT id FROM trades
+                    WHERE symbol = ? AND side = ? AND status = 'OPEN'
+                    ORDER BY entry_time DESC
+                    LIMIT 1
+                )
+            """
+            params.extend([symbol, side])
+        else:
+            where = """
+                id = (
+                    SELECT id FROM trades
+                    WHERE symbol = ? AND status = 'OPEN'
+                    ORDER BY entry_time DESC
+                    LIMIT 1
+                )
+            """
+            params.append(symbol)
+
+        cursor = self.conn.cursor()
+        cursor.execute(f"UPDATE trades SET {', '.join(updates)} WHERE {where}", params)
+        self.conn.commit()
+
+        if cursor.rowcount <= 0:
+            return False
+
+        self.logger.info(f"💾 DATABASE | OPEN reconciled | {symbol}")
+        return True
 
     def mark_trade_cancelled(
         self,

@@ -98,6 +98,50 @@ class ExecutionSafetyTests(unittest.TestCase):
 
             db.close()
 
+    def test_database_reconciles_open_trade_qty_after_partial_fill_grows(self):
+        from core.database import TradeDatabase
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = TradeDatabase(os.path.join(tmpdir, "bot_memory.db"))
+
+            db.add_trade(
+                {
+                    "order_id": "limit-1",
+                    "symbol": "BTCUSDT",
+                    "side": "LONG",
+                    "entry": 100.0,
+                    "qty": 1.0,
+                    "sl": 95.0,
+                    "score": 80,
+                    "status": "PENDING_ORDER",
+                }
+            )
+
+            self.assertTrue(
+                db.mark_trade_open(
+                    symbol="BTCUSDT",
+                    side="LONG",
+                    entry_price=100.0,
+                    qty=0.4,
+                    stop_loss=95.0,
+                )
+            )
+            self.assertTrue(
+                db.mark_trade_open(
+                    symbol="BTCUSDT",
+                    side="LONG",
+                    entry_price=100.0,
+                    qty=1.0,
+                    stop_loss=95.0,
+                )
+            )
+
+            open_positions = db.get_open_positions()
+            self.assertEqual(len(open_positions), 1)
+            self.assertEqual(open_positions[0]["qty"], 1.0)
+
+            db.close()
+
     def test_tp_cleanup_only_cancels_reduce_only_orders(self):
         from core.tp_manager import TPManager
 
@@ -129,6 +173,20 @@ class ExecutionSafetyTests(unittest.TestCase):
         manager._cancel_existing_tps("BTCUSDT", position_idx=1)
 
         self.assertEqual(session.cancelled, ["tp-1"])
+
+    def test_tp_split_preserves_normalized_total_qty(self):
+        from core.tp_manager import TPManager
+
+        class FakeInstruments:
+            def normalize_qty(self, symbol, qty):
+                return int(float(qty) * 1000) / 1000
+
+        manager = TPManager(session=types.SimpleNamespace(), instruments=FakeInstruments())
+
+        parts = manager._split_qty("BTCUSDT", 0.4, 3)
+
+        self.assertEqual(parts, [0.2, 0.1, 0.1])
+        self.assertEqual(round(sum(parts), 8), 0.4)
 
     def test_risk_manager_blocks_new_entries_when_position_has_no_stop(self):
         from core.risk_manager import RiskManager
@@ -392,7 +450,109 @@ class ExecutionSafetyTests(unittest.TestCase):
         )
 
         self.assertTrue(manager.position_cache["BTCUSDT"]["tps_placed"])
-        self.assertEqual(manager.tp_manager.placed[0]["total_qty"], 1.0)
+        self.assertEqual(manager.tp_manager.placed[0]["total_qty"], 0.95)
+
+    def test_position_manager_places_tps_for_partial_fill_visible_qty(self):
+        from core.position_manager import PositionManager
+
+        class FakeDatabaseSync:
+            def get_open_trade(self, symbol, side=None):
+                return None
+
+        class FakeTPManager:
+            def __init__(self):
+                self.placed = []
+
+            def calculate_tp_levels(self, entry, stop, side):
+                return {"tp1": 105.0, "tp2": 115.0}
+
+            def normalize_tp_levels(self, symbol, tp_levels, side):
+                return dict(tp_levels)
+
+            def place_cascade_tps(self, **kwargs):
+                self.placed.append(kwargs)
+                return True
+
+        manager = PositionManager.__new__(PositionManager)
+        manager.position_cache = {
+            "BTCUSDT": {
+                "symbol": "BTCUSDT",
+                "side": "LONG",
+                "initial_qty": 1.0,
+                "entry_price": 100.0,
+                "sl": 95.0,
+                "position_idx": 1,
+                "tps_placed": False,
+                "tp_qty": 0.0,
+            }
+        }
+        manager.database_sync = FakeDatabaseSync()
+        manager.tp_manager = FakeTPManager()
+        manager.logger = logging.getLogger("test.PositionManager")
+
+        manager._check_and_place_missing_tps(
+            symbol="BTCUSDT",
+            side="LONG",
+            current_size=0.4,
+            entry_price=100.0,
+            current_sl=95.0,
+            position_idx=1,
+        )
+
+        self.assertTrue(manager.position_cache["BTCUSDT"]["tps_placed"])
+        self.assertEqual(manager.position_cache["BTCUSDT"]["tp_qty"], 0.4)
+        self.assertEqual(manager.tp_manager.placed[0]["total_qty"], 0.4)
+
+    def test_position_manager_refreshes_tps_when_partial_fill_grows(self):
+        from core.position_manager import PositionManager
+
+        class FakeDatabaseSync:
+            def get_open_trade(self, symbol, side=None):
+                return None
+
+        class FakeTPManager:
+            def __init__(self):
+                self.placed = []
+
+            def calculate_tp_levels(self, entry, stop, side):
+                return {"tp1": 105.0, "tp2": 115.0}
+
+            def normalize_tp_levels(self, symbol, tp_levels, side):
+                return dict(tp_levels)
+
+            def place_cascade_tps(self, **kwargs):
+                self.placed.append(kwargs)
+                return True
+
+        manager = PositionManager.__new__(PositionManager)
+        manager.position_cache = {
+            "BTCUSDT": {
+                "symbol": "BTCUSDT",
+                "side": "LONG",
+                "initial_qty": 1.0,
+                "entry_price": 100.0,
+                "sl": 95.0,
+                "position_idx": 1,
+                "tps_placed": True,
+                "tp_qty": 0.4,
+            }
+        }
+        manager.database_sync = FakeDatabaseSync()
+        manager.tp_manager = FakeTPManager()
+        manager.logger = logging.getLogger("test.PositionManager")
+
+        manager._check_and_place_missing_tps(
+            symbol="BTCUSDT",
+            side="LONG",
+            current_size=0.8,
+            entry_price=100.0,
+            current_sl=95.0,
+            position_idx=1,
+        )
+
+        self.assertEqual(manager.position_cache["BTCUSDT"]["tp_qty"], 0.8)
+        self.assertEqual(manager.tp_manager.placed[0]["total_qty"], 0.8)
+
 
     def test_executor_order_params_include_order_link_id_and_no_none_values(self):
         from core.executor import TradeExecutor

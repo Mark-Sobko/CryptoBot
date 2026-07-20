@@ -66,8 +66,15 @@ CI and security checks:
 .venv/bin/python scripts/secret_scan.py --history
 .venv/bin/python -m unittest discover -s tests -v
 .venv/bin/python -m compileall -q core engine tests scripts main.py config.py analyze_trades.py
+.venv/bin/python scripts/pre_commit_checks.py
+git config core.hooksPath .githooks
 ```
 
 GitHub Actions installs from `requirements-lock.txt`, runs `pip check`, scans
 the full fetched history for secrets/runtime artifacts, compiles sources, and
 runs the unit test suite.
+
+`scripts/pre_commit_checks.py` is the same local guard wired by
+`.githooks/pre-commit`: it scans staged content for secrets/runtime paths, runs
+the full history scanner, compiles Python sources, and runs unit tests before a
+commit is accepted.

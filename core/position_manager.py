@@ -54,7 +54,8 @@ class PositionManager:
             "entry_price": float(entry_price),
             "sl": float(sl),
             "position_idx": int(position_idx),
-            "tps_placed": bool(tps_placed)
+            "tps_placed": bool(tps_placed),
+            "tp_qty": float(initial_qty) if tps_placed else 0.0,
         }
 
     def _api_call(self, func, *args, **kwargs) -> Optional[Dict[str, Any]]:
@@ -222,39 +223,56 @@ class PositionManager:
     ) -> None:
         """
         Проверяет, расставлен ли каскад TP для позиции.
-        Если это сработавший лимитный ордер (у которого есть только 1 вшитый TP),
-        метод снимет базовый TP и выставит правильный каскад лимиток.
+        Если это сработавший лимитный ордер или размер позиции изменился после
+        partial fill/partial close, метод снимет старые TP и выставит каскад на
+        фактически видимый размер позиции.
         """
         cached = self._load_cached_position(symbol, side)
         
-        # Если позиция есть в кэше и флаг tps_placed == False
-        if cached and cached.get("side") == side and not cached.get("tps_placed"):
-            initial_qty = float(cached.get("initial_qty", 0.0))
-            
-            # Если позиция налита полностью (или почти полностью)
-            if initial_qty > 0 and current_size >= (initial_qty * 0.9):
-                self.logger.info(f"🔄 [{symbol}] Limit order filled. Placing cascade TPs...")
-                
-                # 1. Рассчитываем и нормализуем уровни
-                raw_tp_levels = self.tp_manager.calculate_tp_levels(entry_price, current_sl, side)
-                tp_levels = self.tp_manager.normalize_tp_levels(symbol, raw_tp_levels, side)
-                
-                # 2. Выставляем каскад (TPManager сам отменит старые тейки)
-                if tp_levels:
-                    success = self.tp_manager.place_cascade_tps(
-                        symbol=symbol,
-                        side=side,
-                        total_qty=initial_qty, # Рассчитываем каскад от изначального объема
-                        tp_levels=tp_levels,
-                        position_idx=position_idx,
-                    )
-                    
-                    if success:
-                        self.logger.info(f"✅ [{symbol}] Cascade TPs placed successfully.")
-                        self.position_cache[symbol]["tps_placed"] = True
-                    else:
-                        self.logger.warning(f"⚠️ [{symbol}] Failed to place cascade TPs.")
+        if not cached or cached.get("side") != side:
+            return
+
+        if current_size <= 0:
+            return
+
+        previous_tp_qty = float(cached.get("tp_qty", 0.0) or 0.0)
+        tps_placed = bool(cached.get("tps_placed"))
+        qty_changed = self._tp_qty_needs_refresh(previous_tp_qty, current_size)
+
+        if tps_placed and not qty_changed:
+            return
+
+        self.logger.info(
+            f"🔄 [{symbol}] Placing TP cascade for visible qty={current_size}"
+        )
+
+        raw_tp_levels = self.tp_manager.calculate_tp_levels(entry_price, current_sl, side)
+        tp_levels = self.tp_manager.normalize_tp_levels(symbol, raw_tp_levels, side)
+
+        if not tp_levels:
+            return
+
+        success = self.tp_manager.place_cascade_tps(
+            symbol=symbol,
+            side=side,
+            total_qty=current_size,
+            tp_levels=tp_levels,
+            position_idx=position_idx,
+        )
+
+        if success:
+            self.logger.info(f"✅ [{symbol}] Cascade TPs placed successfully.")
+            self.position_cache[symbol]["tps_placed"] = True
+            self.position_cache[symbol]["tp_qty"] = float(current_size)
+        else:
+            self.logger.warning(f"⚠️ [{symbol}] Failed to place cascade TPs.")
     # =========================================================================
+
+    @staticmethod
+    def _tp_qty_needs_refresh(previous_qty: float, current_size: float) -> bool:
+        if previous_qty <= 0 or current_size <= 0:
+            return True
+        return abs(current_size - previous_qty) / previous_qty > 0.01
 
     def is_partially_closed(
         self,

@@ -148,10 +148,14 @@ class TPManager:
         if total_qty <= 0 or count <= 0:
             return []
 
+        normalized_total = self.instruments.normalize_qty(symbol, total_qty)
+        if normalized_total <= 0:
+            return []
+
         partial_close_pct = float(config.TRADE_EXECUTION.get("partial_close_pct", 0.5))
 
         if count == 1:
-            return [self.instruments.normalize_qty(symbol, total_qty)]
+            return [normalized_total]
 
         base_parts = [partial_close_pct]
 
@@ -163,14 +167,17 @@ class TPManager:
             base_parts.append(tail_part)
 
         qty_parts: List[float] = []
-        used_qty = 0.0
+        used_qty = Decimal("0")
+        d_total_qty = Decimal(str(normalized_total))
 
         for i, part in enumerate(base_parts):
             if i == count - 1:
-                qty = self.instruments.normalize_qty(symbol, total_qty - used_qty)
+                raw_qty = max(Decimal("0"), d_total_qty - used_qty)
             else:
-                qty = self.instruments.normalize_qty(symbol, total_qty * part)
-                used_qty += qty
+                raw_qty = d_total_qty * Decimal(str(part))
+
+            qty = self.instruments.normalize_qty(symbol, float(raw_qty))
+            used_qty += Decimal(str(qty))
 
             if qty > 0:
                 qty_parts.append(qty)
