@@ -79,7 +79,8 @@ demo/testnet by default, does not import the executor, does not call
 counts, signal route counts, failed checks, and repeated-symbol frequencies
 without printing every per-symbol analysis packet. Signal outputs include a
 read-only plan with reference entry/SL/TP/R:R and planned limit/market entry,
-but no quantity and no exchange order placement. The probe-only mode
+plus protective stop/R:R after the minimum stop-distance guard, but no quantity
+and no exchange order placement. The probe-only mode
 dynamically ranks low-notional
 USDT instruments by visible orderbook size, attempts a capped demo/testnet
 partial fill near `--max-notional * --partial-fill-target-notional-pct`, can

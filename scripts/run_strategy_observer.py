@@ -128,6 +128,16 @@ def risk_reward_ratio(entry: float, stop: float, tp: float) -> float:
     return abs(tp - entry) / risk
 
 
+def protective_stop_loss(entry: float, stop: float, trend: str) -> tuple[float, bool]:
+    stop_dist_pct = (abs(entry - stop) / entry) * 100.0 if entry > 0 else 0.0
+    if stop_dist_pct >= RiskManager.MIN_STOP_PCT:
+        return stop, False
+
+    stop_dist = entry * (RiskManager.MIN_STOP_PCT / 100.0)
+    adjusted = entry - stop_dist if trend == "LONG" else entry + stop_dist
+    return adjusted, True
+
+
 def configured_min_rr() -> float:
     ratios = config.TRADE_EXECUTION.get("tp_ratios", [])
     return float(ratios[0]) if ratios else RiskManager.DEFAULT_MIN_RR
@@ -151,11 +161,17 @@ def build_signal_plan(
         if trend == "LONG"
         else execution_entry - zone_size * 3
     )
+    protective_stop, protective_adjusted = protective_stop_loss(
+        execution_entry,
+        sl_price,
+        trend,
+    )
 
     return {
         "score": score,
         "route": route,
         "min_rr": configured_min_rr(),
+        "min_stop_pct": RiskManager.MIN_STOP_PCT,
         "route_reference_entry": current_price,
         "route_reference_tp": route_tp,
         "route_reference_rr": round(risk_reward_ratio(current_price, sl_price, route_tp), 4),
@@ -163,6 +179,12 @@ def build_signal_plan(
         "execution_tp": execution_tp,
         "execution_rr": round(risk_reward_ratio(execution_entry, sl_price, execution_tp), 4),
         "stop_loss": sl_price,
+        "protective_stop_loss": protective_stop,
+        "protective_stop_adjusted": protective_adjusted,
+        "protective_execution_rr": round(
+            risk_reward_ratio(execution_entry, protective_stop, execution_tp),
+            4,
+        ),
         "zone_top": zone_top,
         "zone_bottom": zone_bottom,
         "zone_size": zone_size,
@@ -214,8 +236,12 @@ def compact_setup(result: dict[str, Any]) -> dict[str, Any]:
             "stop_loss": plan.get("stop_loss"),
             "execution_tp": plan.get("execution_tp"),
             "execution_rr": plan.get("execution_rr"),
+            "protective_stop_loss": plan.get("protective_stop_loss"),
+            "protective_stop_adjusted": plan.get("protective_stop_adjusted"),
+            "protective_execution_rr": plan.get("protective_execution_rr"),
             "route_reference_rr": plan.get("route_reference_rr"),
             "min_rr": plan.get("min_rr"),
+            "min_stop_pct": plan.get("min_stop_pct"),
         }
     return compact
 

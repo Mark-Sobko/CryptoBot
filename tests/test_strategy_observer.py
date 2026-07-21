@@ -14,6 +14,7 @@ from scripts.run_strategy_observer import (
     compact_setup,
     news_score_bonus,
     parse_symbols,
+    protective_stop_loss,
     risk_reward_ratio,
     summarize_cycle,
     summarize_cycles,
@@ -98,11 +99,26 @@ class StrategyObserverTests(unittest.TestCase):
         self.assertAlmostEqual(plan["execution_tp"], 0.15315)
         self.assertLess(plan["route_reference_rr"], plan["min_rr"])
         self.assertGreater(plan["execution_rr"], plan["min_rr"])
+        self.assertTrue(plan["protective_stop_adjusted"])
+        self.assertAlmostEqual(plan["protective_stop_loss"], 0.154589175)
+        self.assertGreater(plan["protective_execution_rr"], plan["min_rr"])
         self.assertTrue(plan["read_only"])
 
     def test_risk_reward_ratio_handles_zero_risk(self):
         self.assertEqual(risk_reward_ratio(1.0, 1.0, 1.2), 0.0)
         self.assertAlmostEqual(risk_reward_ratio(1.0, 0.9, 1.2), 2.0)
+
+    def test_protective_stop_loss_preserves_wide_stop(self):
+        stop, adjusted = protective_stop_loss(1.0, 0.99, "LONG")
+
+        self.assertEqual(stop, 0.99)
+        self.assertFalse(adjusted)
+
+    def test_protective_stop_loss_adjusts_tight_short_stop(self):
+        stop, adjusted = protective_stop_loss(1.0, 1.001, "SHORT")
+
+        self.assertAlmostEqual(stop, 1.0035)
+        self.assertTrue(adjusted)
 
     def test_summarize_cycle_reports_counts_reasons_and_near_setups(self):
         cycle = {
@@ -177,8 +193,12 @@ class StrategyObserverTests(unittest.TestCase):
                         "stop_loss": 0.1542,
                         "execution_tp": 0.15315,
                         "execution_rr": 6.0,
+                        "protective_stop_loss": 0.154589175,
+                        "protective_stop_adjusted": True,
+                        "protective_execution_rr": 1.6692,
                         "route_reference_rr": 0.75,
                         "min_rr": 1.0,
+                        "min_stop_pct": 0.35,
                     },
                 }
             ]
@@ -193,6 +213,7 @@ class StrategyObserverTests(unittest.TestCase):
         self.assertEqual(summary["signals"][0]["failed_checks"], ["m5"])
         self.assertEqual(summary["signals"][0]["signal_plan"]["order_type"], "Limit")
         self.assertEqual(summary["signals"][0]["signal_plan"]["execution_rr"], 6.0)
+        self.assertTrue(summary["signals"][0]["signal_plan"]["protective_stop_adjusted"])
         self.assertEqual(summary["signal_counts"], {"WIFUSDT": 1})
         self.assertEqual(summary["signal_route_counts"], {"LIMIT": 1})
         self.assertEqual(summary["signal_failed_check_counts"], {"m5": 1})
@@ -216,14 +237,19 @@ class StrategyObserverTests(unittest.TestCase):
                     "stop_loss": 0.1542,
                     "execution_tp": 0.15315,
                     "execution_rr": 6.0,
+                    "protective_stop_loss": 0.154589175,
+                    "protective_stop_adjusted": True,
+                    "protective_execution_rr": 1.6692,
                     "route_reference_rr": 0.75,
                     "min_rr": 1.0,
+                    "min_stop_pct": 0.35,
                     "zone_top": 0.1542,
                 },
             }
         )
 
         self.assertEqual(compact["signal_plan"]["order_type"], "Limit")
+        self.assertTrue(compact["signal_plan"]["protective_stop_adjusted"])
         self.assertNotIn("zone_top", compact["signal_plan"])
 
     def test_compact_cycle_removes_verbose_results(self):
