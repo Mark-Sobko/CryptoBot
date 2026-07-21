@@ -207,6 +207,8 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
     signals: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     near_setups_by_key: dict[tuple[Any, ...], dict[str, Any]] = {}
+    near_setup_counts: Counter[str] = Counter()
+    near_setup_blocker_counts: Counter[str] = Counter()
 
     for cycle in cycles:
         summary = summarize_cycle(cycle)
@@ -216,6 +218,8 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
         signals.extend(summary["signals"])
         errors.extend(summary["errors"])
         for setup in summary["near_setups"]:
+            near_setup_counts.update([str(setup.get("symbol", "UNKNOWN"))])
+            near_setup_blocker_counts.update(str(item) for item in setup.get("blockers", []))
             key = (
                 setup.get("symbol"),
                 setup.get("trend"),
@@ -233,6 +237,8 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
         "signals": signals,
         "errors": errors,
         "near_setups": list(near_setups_by_key.values()),
+        "near_setup_counts": dict(sorted(near_setup_counts.items())),
+        "near_setup_blocker_counts": dict(sorted(near_setup_blocker_counts.items())),
     }
 
 

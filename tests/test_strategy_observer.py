@@ -141,6 +141,8 @@ class StrategyObserverTests(unittest.TestCase):
         self.assertEqual(summary["signals_total"], 0)
         self.assertEqual(summary["errors_total"], 0)
         self.assertEqual(len(summary["near_setups"]), 1)
+        self.assertEqual(summary["near_setup_counts"], {"RENDERUSDT": 2})
+        self.assertEqual(summary["near_setup_blocker_counts"], {"m5": 2, "poi": 2})
 
     def test_compact_cycle_removes_verbose_results(self):
         cycle = {

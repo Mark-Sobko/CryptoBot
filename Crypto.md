@@ -76,7 +76,8 @@ full lifecycle and validates the required steps after each iteration. The
 demo/testnet by default, does not import the executor, does not call
 `place_order`, and emits JSON score/signal observations only. Use
 `--summary-only` for longer read-only soaks; it keeps status/reason/near-setup
-counts without printing every per-symbol analysis packet. The probe-only mode
+counts and repeated-symbol frequencies without printing every per-symbol
+analysis packet. The probe-only mode
 dynamically ranks low-notional
 USDT instruments by visible orderbook size, attempts a capped demo/testnet
 partial fill near `--max-notional * --partial-fill-target-notional-pct`, can
