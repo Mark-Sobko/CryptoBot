@@ -53,6 +53,7 @@ Safe lifecycle checks:
 python3 scripts/run_paper_lifecycle.py --db /tmp/cryptobot_paper_lifecycle.db --reset-db
 python3 scripts/run_paper_lifecycle.py --db /tmp/cryptobot_paper_partial_lifecycle.db --reset-db --partial-fill-recovery
 .venv/bin/python scripts/run_bybit_demo_lifecycle.py --symbol XRPUSDT --max-notional 15 --wait 20
+.venv/bin/python scripts/run_bybit_demo_lifecycle_soak.py --iterations 3 --symbol XRPUSDT --max-notional 25 --wait 20 --sleep 3
 .venv/bin/python scripts/run_bybit_demo_lifecycle.py --partial-fill-probe-only --max-notional 15 --wait 8 --partial-fill-dynamic-candidates 10 --partial-fill-max-scan 100 --partial-fill-target-notional-pct 0.95
 .venv/bin/python scripts/run_bybit_demo_lifecycle.py --partial-fill-probe-only --max-notional 25 --wait 8 --partial-fill-dynamic-candidates 10 --partial-fill-max-scan 250 --partial-fill-target-notional-pct 0.95 --partial-fill-price-levels 5 --partial-fill-orderbook-depth 50 --partial-fill-poll-interval 0.1
 ```
@@ -61,7 +62,9 @@ python3 scripts/run_paper_lifecycle.py --db /tmp/cryptobot_paper_partial_lifecyc
 `BYBIT_TESTNET=true`. It covers safe create/amend/cancel, expected retCode
 failures, partial reduce-only close, reduce-only TP, stop-loss set/clear,
 restart recovery sync, and a best-effort partial-fill probe that always cleans
-up its own orders/positions. The probe-only mode dynamically ranks low-notional
+up its own orders/positions. `run_bybit_demo_lifecycle_soak.py` repeats that
+full lifecycle and validates the required steps after each iteration. The
+probe-only mode dynamically ranks low-notional
 USDT instruments by visible orderbook size, attempts a capped demo/testnet
 partial fill near `--max-notional * --partial-fill-target-notional-pct`, can
 cross multiple ask levels with `--partial-fill-price-levels`, sweeps down to
