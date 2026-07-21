@@ -240,7 +240,33 @@ class StrategyObserverTests(unittest.TestCase):
             smc_blocker_reason(
                 {
                     "smc_ok": False,
+                    "mtf_aligned": False,
+                    "htf_direction": None,
+                    "ltf_direction": "SHORT",
+                    "htf_structure_ok": False,
+                }
+            ),
+            "htf_direction_missing",
+        )
+        self.assertEqual(
+            smc_blocker_reason(
+                {
+                    "smc_ok": False,
+                    "mtf_aligned": False,
+                    "htf_direction": "SHORT",
+                    "ltf_direction": None,
+                    "htf_structure_ok": True,
+                }
+            ),
+            "ltf_direction_missing",
+        )
+        self.assertEqual(
+            smc_blocker_reason(
+                {
+                    "smc_ok": False,
                     "mtf_aligned": True,
+                    "htf_direction": "LONG",
+                    "ltf_direction": "LONG",
                     "htf_structure_ok": False,
                 }
             ),
@@ -315,7 +341,17 @@ class StrategyObserverTests(unittest.TestCase):
                 },
                 {
                     "blocker_details": {
-                        "poi": {"reason": "smc_not_ok", "type": "FVG"},
+                        "poi": {
+                            "reason": "smc_not_ok",
+                            "type": "FVG",
+                            "smc_reason": "htf_direction_missing",
+                            "mtf_aligned": False,
+                            "htf_direction": None,
+                            "ltf_direction": "SHORT",
+                            "htf_structure_ok": False,
+                            "ltf_structure_ok": True,
+                            "side_aligned": True,
+                        },
                         "pd_alignment": {"aligned": False},
                         "liquidity_target": {
                             "has_target": False,
@@ -327,7 +363,17 @@ class StrategyObserverTests(unittest.TestCase):
         )
 
         self.assertEqual(counts["poi_reason_counts"], {"missing": 1, "smc_not_ok": 1})
+        self.assertEqual(
+            counts["poi_smc_reason_counts"],
+            {"htf_direction_missing": 1, "unknown": 1},
+        )
         self.assertEqual(counts["poi_type_counts"], {"FVG": 1, "missing": 1})
+        self.assertEqual(counts["mtf_alignment_counts"], {"false": 1})
+        self.assertEqual(counts["htf_direction_counts"], {"missing": 1})
+        self.assertEqual(counts["ltf_direction_counts"], {"SHORT": 1})
+        self.assertEqual(counts["htf_structure_ok_counts"], {"false": 1})
+        self.assertEqual(counts["ltf_structure_ok_counts"], {"true": 1})
+        self.assertEqual(counts["poi_side_alignment_counts"], {"true": 1})
         self.assertEqual(counts["m5_trigger_counts"], {"false": 1})
         self.assertEqual(counts["pd_alignment_counts"], {"false": 2})
         self.assertEqual(counts["liquidity_target_counts"], {"missing": 2})

@@ -289,12 +289,16 @@ def failed_checks(result: dict[str, Any]) -> list[str]:
 def smc_blocker_reason(analysis: dict[str, Any]) -> str:
     if bool(analysis.get("smc_ok", False)):
         return "ok"
-    if "mtf_aligned" in analysis and not bool(analysis.get("mtf_aligned")):
-        return "mtf_not_aligned"
+    if "htf_direction" in analysis and not analysis.get("htf_direction"):
+        return "htf_direction_missing"
+    if "ltf_direction" in analysis and not analysis.get("ltf_direction"):
+        return "ltf_direction_missing"
     if "htf_structure_ok" in analysis and not bool(analysis.get("htf_structure_ok")):
         return "htf_structure_not_ok"
     if "poi_side_aligned" in analysis and not bool(analysis.get("poi_side_aligned")):
         return "poi_side_mismatch"
+    if "mtf_aligned" in analysis and not bool(analysis.get("mtf_aligned")):
+        return "mtf_not_aligned"
     if "ltf_structure_ok" in analysis and not bool(analysis.get("ltf_structure_ok")):
         return "ltf_structure_not_ok"
     return "not_confirmed"
@@ -486,6 +490,12 @@ def count_blocker_details(setups: list[dict[str, Any]]) -> dict[str, dict[str, i
         "poi_smc_reason_counts": Counter(),
         "poi_type_counts": Counter(),
         "structure_counts": Counter(),
+        "mtf_alignment_counts": Counter(),
+        "htf_direction_counts": Counter(),
+        "ltf_direction_counts": Counter(),
+        "htf_structure_ok_counts": Counter(),
+        "ltf_structure_ok_counts": Counter(),
+        "poi_side_alignment_counts": Counter(),
         "m5_trigger_counts": Counter(),
         "pd_alignment_counts": Counter(),
         "liquidity_target_counts": Counter(),
@@ -506,6 +516,30 @@ def count_blocker_details(setups: list[dict[str, Any]]) -> dict[str, dict[str, i
                 [str(poi.get("smc_reason") or "unknown")]
             )
             counts["poi_type_counts"].update([str(poi.get("type") or "missing")])
+            if "mtf_aligned" in poi:
+                counts["mtf_alignment_counts"].update(
+                    [str(bool(poi.get("mtf_aligned", False))).lower()]
+                )
+            if "htf_direction" in poi:
+                counts["htf_direction_counts"].update(
+                    [str(poi.get("htf_direction") or "missing")]
+                )
+            if "ltf_direction" in poi:
+                counts["ltf_direction_counts"].update(
+                    [str(poi.get("ltf_direction") or "missing")]
+                )
+            if "htf_structure_ok" in poi:
+                counts["htf_structure_ok_counts"].update(
+                    [str(bool(poi.get("htf_structure_ok", False))).lower()]
+                )
+            if "ltf_structure_ok" in poi:
+                counts["ltf_structure_ok_counts"].update(
+                    [str(bool(poi.get("ltf_structure_ok", False))).lower()]
+                )
+            if "side_aligned" in poi:
+                counts["poi_side_alignment_counts"].update(
+                    [str(bool(poi.get("side_aligned", False))).lower()]
+                )
 
         structure = details.get("structure")
         if isinstance(structure, dict):
