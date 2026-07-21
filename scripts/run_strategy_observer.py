@@ -9,6 +9,7 @@ strategy behavior can be watched without placing orders.
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 import sys
 import time
@@ -117,6 +118,134 @@ def compact_poi(poi: dict[str, Any] | None) -> dict[str, Any] | None:
         "top": safe_float(poi.get("top")),
         "bottom": safe_float(poi.get("bottom")),
         "mid": safe_float(poi.get("mid", poi.get("price"))),
+    }
+
+
+def signal_blockers(result: dict[str, Any]) -> list[str]:
+    analysis = result.get("analysis")
+    if not isinstance(analysis, dict):
+        return []
+
+    blocker_checks = (
+        ("structure", "structure_ok"),
+        ("poi", "poi_ok"),
+        ("m5", "m5_ok"),
+        ("macro", "macro_ok"),
+        ("pd_alignment", "is_pd_aligned"),
+        ("liquidity_target", "has_liquidity_target"),
+    )
+    return [
+        label
+        for label, key in blocker_checks
+        if key in analysis and not bool(analysis.get(key))
+    ]
+
+
+def compact_setup(result: dict[str, Any]) -> dict[str, Any]:
+    compact = {
+        "symbol": result.get("symbol", ""),
+        "status": result.get("status", ""),
+        "trend": result.get("trend", ""),
+        "reason": result.get("reason", ""),
+        "score": result.get("score"),
+        "threshold": result.get("threshold"),
+        "would_route": result.get("would_route"),
+        "has_poi": bool(result.get("poi")),
+    }
+    blockers = signal_blockers(result)
+    if blockers:
+        compact["blockers"] = blockers
+    return compact
+
+
+def summarize_cycle(cycle: dict[str, Any]) -> dict[str, Any]:
+    raw_results = cycle.get("results", [])
+    results = raw_results if isinstance(raw_results, list) else []
+    status_counts = Counter(
+        str(item.get("status", "UNKNOWN")) for item in results if isinstance(item, dict)
+    )
+    trend_counts = Counter(
+        str(item.get("trend", "UNKNOWN")) for item in results if isinstance(item, dict)
+    )
+    reject_reasons = Counter(
+        str(item.get("reason", "unspecified"))
+        for item in results
+        if isinstance(item, dict) and item.get("status") == "REJECT"
+    )
+    signals = [
+        compact_setup(item)
+        for item in results
+        if isinstance(item, dict) and item.get("status") == "SIGNAL"
+    ]
+    errors = [
+        compact_setup(item)
+        for item in results
+        if isinstance(item, dict) and item.get("status") == "ERROR"
+    ]
+    near_setups = [
+        compact_setup(item)
+        for item in results
+        if isinstance(item, dict)
+        and item.get("status") == "REJECT"
+        and str(item.get("trend", "")).upper() in ("LONG", "SHORT")
+    ]
+
+    return {
+        "status_counts": dict(sorted(status_counts.items())),
+        "trend_counts": dict(sorted(trend_counts.items())),
+        "reject_reasons": dict(sorted(reject_reasons.items())),
+        "signals": signals,
+        "errors": errors,
+        "near_setups": near_setups,
+    }
+
+
+def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
+    status_counts: Counter[str] = Counter()
+    trend_counts: Counter[str] = Counter()
+    reject_reasons: Counter[str] = Counter()
+    signals: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    near_setups_by_key: dict[tuple[Any, ...], dict[str, Any]] = {}
+
+    for cycle in cycles:
+        summary = summarize_cycle(cycle)
+        status_counts.update(summary["status_counts"])
+        trend_counts.update(summary["trend_counts"])
+        reject_reasons.update(summary["reject_reasons"])
+        signals.extend(summary["signals"])
+        errors.extend(summary["errors"])
+        for setup in summary["near_setups"]:
+            key = (
+                setup.get("symbol"),
+                setup.get("trend"),
+                setup.get("reason"),
+                tuple(setup.get("blockers", [])),
+            )
+            near_setups_by_key[key] = setup
+
+    return {
+        "status_counts": dict(sorted(status_counts.items())),
+        "trend_counts": dict(sorted(trend_counts.items())),
+        "reject_reasons": dict(sorted(reject_reasons.items())),
+        "signals_total": len(signals),
+        "errors_total": len(errors),
+        "signals": signals,
+        "errors": errors,
+        "near_setups": list(near_setups_by_key.values()),
+    }
+
+
+def compact_cycle(cycle: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "cycle": cycle.get("cycle"),
+        "status": cycle.get("status"),
+        "duration_s": cycle.get("duration_s"),
+        "symbols_scanned": cycle.get("symbols_scanned"),
+        "signals": cycle.get("signals"),
+        "macro": cycle.get("macro"),
+        "news": cycle.get("news"),
+        "summary": cycle.get("summary", summarize_cycle(cycle)),
     }
 
 
@@ -294,6 +423,7 @@ def main() -> int:
     parser.add_argument("--sleep", type=float, default=60.0)
     parser.add_argument("--include-news", action="store_true")
     parser.add_argument("--allow-production-read-only", action="store_true")
+    parser.add_argument("--summary-only", action="store_true")
     args = parser.parse_args()
 
     if args.cycles <= 0:
@@ -318,6 +448,7 @@ def main() -> int:
         cycle = observer.run_cycle(symbols, threshold=threshold)
         cycle["cycle"] = index
         cycle["duration_s"] = round(time.time() - started_at, 3)
+        cycle["summary"] = summarize_cycle(cycle)
         cycles.append(cycle)
 
         if index < args.cycles:
@@ -332,7 +463,8 @@ def main() -> int:
         "cycles_requested": args.cycles,
         "cycles_completed": len(cycles),
         "symbols": symbols,
-        "cycles": cycles,
+        "summary": summarize_cycles(cycles),
+        "cycles": [compact_cycle(cycle) for cycle in cycles] if args.summary_only else cycles,
     }
     print(json.dumps(output, indent=2, sort_keys=True))
     return 1 if failed else 0
