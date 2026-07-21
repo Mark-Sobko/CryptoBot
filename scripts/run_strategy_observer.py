@@ -335,6 +335,53 @@ def compact_setup(result: dict[str, Any]) -> dict[str, Any]:
     return compact
 
 
+def count_blocker_details(setups: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+    counts = {
+        "poi_reason_counts": Counter(),
+        "poi_type_counts": Counter(),
+        "m5_trigger_counts": Counter(),
+        "pd_alignment_counts": Counter(),
+        "liquidity_target_counts": Counter(),
+        "liquidity_context_counts": Counter(),
+    }
+
+    for setup in setups:
+        details = setup.get("blocker_details")
+        if not isinstance(details, dict):
+            continue
+
+        poi = details.get("poi")
+        if isinstance(poi, dict):
+            counts["poi_reason_counts"].update([str(poi.get("reason", "unknown"))])
+            counts["poi_type_counts"].update([str(poi.get("type") or "missing")])
+
+        m5 = details.get("m5")
+        if isinstance(m5, dict):
+            counts["m5_trigger_counts"].update(
+                [str(bool(m5.get("is_trigger", False))).lower()]
+            )
+
+        pd_alignment = details.get("pd_alignment")
+        if isinstance(pd_alignment, dict):
+            counts["pd_alignment_counts"].update(
+                [str(bool(pd_alignment.get("aligned", False))).lower()]
+            )
+
+        liquidity = details.get("liquidity_target")
+        if isinstance(liquidity, dict):
+            target_key = "present" if liquidity.get("has_target") else "missing"
+            counts["liquidity_target_counts"].update([target_key])
+            counts["liquidity_context_counts"].update(
+                [str(liquidity.get("context") or "unknown")]
+            )
+
+    return {
+        name: dict(sorted(counter.items()))
+        for name, counter in counts.items()
+        if counter
+    }
+
+
 def summarize_cycle(cycle: dict[str, Any]) -> dict[str, Any]:
     raw_results = cycle.get("results", [])
     results = raw_results if isinstance(raw_results, list) else []
@@ -380,6 +427,9 @@ def summarize_cycle(cycle: dict[str, Any]) -> dict[str, Any]:
         "waiting_setups": waiting_setups,
         "errors": errors,
         "near_setups": near_setups,
+        "blocker_detail_counts": count_blocker_details(
+            signals + waiting_setups + near_setups
+        ),
     }
 
 
@@ -401,6 +451,7 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
     waiting_setup_failed_check_counts: Counter[str] = Counter()
     near_setup_counts: Counter[str] = Counter()
     near_setup_failed_check_counts: Counter[str] = Counter()
+    blocker_detail_counts: dict[str, Counter[str]] = {}
 
     for cycle in cycles:
         summary = summarize_cycle(cycle)
@@ -410,6 +461,9 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
         signals.extend(summary["signals"])
         waiting_setups.extend(summary["waiting_setups"])
         errors.extend(summary["errors"])
+        for name, values in summary.get("blocker_detail_counts", {}).items():
+            counter = blocker_detail_counts.setdefault(name, Counter())
+            counter.update(values)
         for signal in summary["signals"]:
             signal_counts.update([str(signal.get("symbol", "UNKNOWN"))])
             signal_route_counts.update([str(signal.get("would_route", "UNKNOWN"))])
@@ -468,6 +522,10 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
         ),
         "near_setup_counts": dict(sorted(near_setup_counts.items())),
         "near_setup_failed_check_counts": dict(sorted(near_setup_failed_check_counts.items())),
+        "blocker_detail_counts": {
+            name: dict(sorted(counter.items()))
+            for name, counter in sorted(blocker_detail_counts.items())
+        },
     }
 
 

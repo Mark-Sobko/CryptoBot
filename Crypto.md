@@ -79,8 +79,8 @@ demo/testnet by default, does not import the executor, does not call
 counts, signal route counts, failed checks, and repeated-symbol frequencies
 without printing every per-symbol analysis packet. Compact setup summaries
 include blocker details for POI, M5 trigger, P/D alignment, and liquidity
-target checks. Signal outputs include a read-only plan with reference
-entry/SL/TP/R:R and planned limit/market entry,
+target checks, plus aggregate blocker-detail counts. Signal outputs include a
+read-only plan with reference entry/SL/TP/R:R and planned limit/market entry,
 plus protective stop/R:R after the minimum stop-distance guard, but no quantity
 and no exchange order placement. High-score setups that still lack M5
 confirmation are reported as `WAIT_CONFIRMATION`, not execution-ready

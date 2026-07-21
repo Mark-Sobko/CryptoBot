@@ -14,6 +14,7 @@ from scripts.run_strategy_observer import (
     classify_signal_status,
     compact_cycle,
     compact_setup,
+    count_blocker_details,
     news_score_bonus,
     parse_symbols,
     protective_stop_loss,
@@ -189,6 +190,39 @@ class StrategyObserverTests(unittest.TestCase):
         self.assertEqual(details["poi"]["side"], "LONG")
         self.assertEqual(details["poi"]["trend"], "SHORT")
 
+    def test_count_blocker_details_reports_aggregate_reasons(self):
+        counts = count_blocker_details(
+            [
+                {
+                    "blocker_details": {
+                        "poi": {"reason": "missing", "type": None},
+                        "m5": {"is_trigger": False},
+                        "pd_alignment": {"aligned": False},
+                        "liquidity_target": {
+                            "has_target": False,
+                            "context": "IMBALANCE_DRIVEN",
+                        },
+                    }
+                },
+                {
+                    "blocker_details": {
+                        "poi": {"reason": "smc_not_ok", "type": "FVG"},
+                        "pd_alignment": {"aligned": False},
+                        "liquidity_target": {
+                            "has_target": False,
+                            "context": "IMBALANCE_DRIVEN",
+                        },
+                    }
+                },
+            ]
+        )
+
+        self.assertEqual(counts["poi_reason_counts"], {"missing": 1, "smc_not_ok": 1})
+        self.assertEqual(counts["poi_type_counts"], {"FVG": 1, "missing": 1})
+        self.assertEqual(counts["m5_trigger_counts"], {"false": 1})
+        self.assertEqual(counts["pd_alignment_counts"], {"false": 2})
+        self.assertEqual(counts["liquidity_target_counts"], {"missing": 2})
+
     def test_summarize_cycle_reports_counts_reasons_and_near_setups(self):
         cycle = {
             "results": [
@@ -236,6 +270,10 @@ class StrategyObserverTests(unittest.TestCase):
         self.assertEqual(
             summary["near_setups"][0]["blocker_details"]["poi"]["reason"],
             "missing",
+        )
+        self.assertEqual(
+            summary["blocker_detail_counts"]["poi_reason_counts"],
+            {"missing": 1},
         )
 
     def test_summarize_cycles_reports_signal_and_near_setup_frequencies(self):
@@ -337,6 +375,10 @@ class StrategyObserverTests(unittest.TestCase):
         self.assertEqual(len(summary["near_setups"]), 1)
         self.assertEqual(summary["near_setup_counts"], {"RENDERUSDT": 2})
         self.assertEqual(summary["near_setup_failed_check_counts"], {"m5": 2, "poi": 2})
+        self.assertEqual(
+            summary["blocker_detail_counts"]["poi_reason_counts"],
+            {"missing": 2},
+        )
 
     def test_compact_setup_includes_compact_signal_plan(self):
         compact = compact_setup(
