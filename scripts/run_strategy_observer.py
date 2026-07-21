@@ -121,6 +121,56 @@ def compact_poi(poi: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
+def risk_reward_ratio(entry: float, stop: float, tp: float) -> float:
+    risk = abs(entry - stop)
+    if risk <= 0:
+        return 0.0
+    return abs(tp - entry) / risk
+
+
+def configured_min_rr() -> float:
+    ratios = config.TRADE_EXECUTION.get("tp_ratios", [])
+    return float(ratios[0]) if ratios else RiskManager.DEFAULT_MIN_RR
+
+
+def build_signal_plan(
+    *,
+    trend: str,
+    current_price: float,
+    sl_price: float,
+    zone_top: float,
+    zone_bottom: float,
+    score: int,
+    route: str | None,
+) -> dict[str, Any]:
+    zone_size = abs(zone_top - zone_bottom) or current_price * 0.01
+    route_tp = current_price + zone_size * 3 if trend == "LONG" else current_price - zone_size * 3
+    execution_entry = (zone_top + zone_bottom) / 2.0 if route == "LIMIT" else current_price
+    execution_tp = (
+        execution_entry + zone_size * 3
+        if trend == "LONG"
+        else execution_entry - zone_size * 3
+    )
+
+    return {
+        "score": score,
+        "route": route,
+        "min_rr": configured_min_rr(),
+        "route_reference_entry": current_price,
+        "route_reference_tp": route_tp,
+        "route_reference_rr": round(risk_reward_ratio(current_price, sl_price, route_tp), 4),
+        "execution_entry": execution_entry,
+        "execution_tp": execution_tp,
+        "execution_rr": round(risk_reward_ratio(execution_entry, sl_price, execution_tp), 4),
+        "stop_loss": sl_price,
+        "zone_top": zone_top,
+        "zone_bottom": zone_bottom,
+        "zone_size": zone_size,
+        "order_type": "Limit" if route == "LIMIT" else "Market",
+        "read_only": True,
+    }
+
+
 def failed_checks(result: dict[str, Any]) -> list[str]:
     analysis = result.get("analysis")
     if not isinstance(analysis, dict):
@@ -155,6 +205,18 @@ def compact_setup(result: dict[str, Any]) -> dict[str, Any]:
     failed = failed_checks(result)
     if failed:
         compact["failed_checks"] = failed
+    plan = result.get("signal_plan")
+    if isinstance(plan, dict):
+        compact["signal_plan"] = {
+            "route": plan.get("route"),
+            "order_type": plan.get("order_type"),
+            "execution_entry": plan.get("execution_entry"),
+            "stop_loss": plan.get("stop_loss"),
+            "execution_tp": plan.get("execution_tp"),
+            "execution_rr": plan.get("execution_rr"),
+            "route_reference_rr": plan.get("route_reference_rr"),
+            "min_rr": plan.get("min_rr"),
+        }
     return compact
 
 
@@ -372,6 +434,7 @@ class ReadOnlyStrategyObserver:
         status = "SIGNAL" if score >= threshold else "REJECT"
         reason = "" if status == "SIGNAL" else f"score_below_threshold:{score}/{threshold}"
         rr_status = None
+        signal_plan = None
 
         if status == "SIGNAL" and final_poi:
             current_price = safe_float(data["1h"]["close"].iloc[-2])
@@ -387,6 +450,15 @@ class ReadOnlyStrategyObserver:
             zone_size = abs(zone_top - zone_bottom) or current_price * 0.01
             tp_price = current_price + zone_size * 3 if trend == "LONG" else current_price - zone_size * 3
             rr_status = self.risk.validate_risk_reward(current_price, sl_price, tp_price, score=score)
+            signal_plan = build_signal_plan(
+                trend=trend,
+                current_price=current_price,
+                sl_price=sl_price,
+                zone_top=zone_top,
+                zone_bottom=zone_bottom,
+                score=score,
+                route=rr_status,
+            )
 
             if rr_status == "REJECT":
                 status = "REJECT"
@@ -405,6 +477,7 @@ class ReadOnlyStrategyObserver:
             "filter_metrics": filter_metrics,
             "confirmation_metrics": self.confirmation.get_metrics_snapshot(),
             "poi": compact_poi(final_poi),
+            "signal_plan": signal_plan,
         }
 
     def run_cycle(self, symbols: list[str], *, threshold: int) -> dict[str, Any]:

@@ -9,9 +9,12 @@ os.environ.setdefault("TELEGRAM_TOKEN", "")
 os.environ.setdefault("TELEGRAM_CHAT_ID", "")
 
 from scripts.run_strategy_observer import (
+    build_signal_plan,
     compact_cycle,
+    compact_setup,
     news_score_bonus,
     parse_symbols,
+    risk_reward_ratio,
     summarize_cycle,
     summarize_cycles,
     validate_market_data,
@@ -79,6 +82,28 @@ class StrategyObserverTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(reason, "missing_timeframe:5m")
 
+    def test_build_signal_plan_reports_limit_entry_and_rr(self):
+        plan = build_signal_plan(
+            trend="SHORT",
+            current_price=0.153,
+            sl_price=0.1542,
+            zone_top=0.1542,
+            zone_bottom=0.1539,
+            score=95,
+            route="LIMIT",
+        )
+
+        self.assertEqual(plan["order_type"], "Limit")
+        self.assertAlmostEqual(plan["execution_entry"], 0.15405)
+        self.assertAlmostEqual(plan["execution_tp"], 0.15315)
+        self.assertLess(plan["route_reference_rr"], plan["min_rr"])
+        self.assertGreater(plan["execution_rr"], plan["min_rr"])
+        self.assertTrue(plan["read_only"])
+
+    def test_risk_reward_ratio_handles_zero_risk(self):
+        self.assertEqual(risk_reward_ratio(1.0, 1.0, 1.2), 0.0)
+        self.assertAlmostEqual(risk_reward_ratio(1.0, 0.9, 1.2), 2.0)
+
     def test_summarize_cycle_reports_counts_reasons_and_near_setups(self):
         cycle = {
             "results": [
@@ -145,6 +170,16 @@ class StrategyObserverTests(unittest.TestCase):
                     "would_route": "LIMIT",
                     "poi": {"side": "SHORT"},
                     "analysis": {"poi_ok": True, "m5_ok": False},
+                    "signal_plan": {
+                        "route": "LIMIT",
+                        "order_type": "Limit",
+                        "execution_entry": 0.15405,
+                        "stop_loss": 0.1542,
+                        "execution_tp": 0.15315,
+                        "execution_rr": 6.0,
+                        "route_reference_rr": 0.75,
+                        "min_rr": 1.0,
+                    },
                 }
             ]
         }
@@ -156,12 +191,40 @@ class StrategyObserverTests(unittest.TestCase):
         self.assertEqual(summary["errors_total"], 0)
         self.assertEqual(len(summary["signals"]), 1)
         self.assertEqual(summary["signals"][0]["failed_checks"], ["m5"])
+        self.assertEqual(summary["signals"][0]["signal_plan"]["order_type"], "Limit")
+        self.assertEqual(summary["signals"][0]["signal_plan"]["execution_rr"], 6.0)
         self.assertEqual(summary["signal_counts"], {"WIFUSDT": 1})
         self.assertEqual(summary["signal_route_counts"], {"LIMIT": 1})
         self.assertEqual(summary["signal_failed_check_counts"], {"m5": 1})
         self.assertEqual(len(summary["near_setups"]), 1)
         self.assertEqual(summary["near_setup_counts"], {"RENDERUSDT": 2})
         self.assertEqual(summary["near_setup_failed_check_counts"], {"m5": 2, "poi": 2})
+
+    def test_compact_setup_includes_compact_signal_plan(self):
+        compact = compact_setup(
+            {
+                "symbol": "WIFUSDT",
+                "status": "SIGNAL",
+                "trend": "SHORT",
+                "score": 95,
+                "threshold": 55,
+                "would_route": "LIMIT",
+                "signal_plan": {
+                    "route": "LIMIT",
+                    "order_type": "Limit",
+                    "execution_entry": 0.15405,
+                    "stop_loss": 0.1542,
+                    "execution_tp": 0.15315,
+                    "execution_rr": 6.0,
+                    "route_reference_rr": 0.75,
+                    "min_rr": 1.0,
+                    "zone_top": 0.1542,
+                },
+            }
+        )
+
+        self.assertEqual(compact["signal_plan"]["order_type"], "Limit")
+        self.assertNotIn("zone_top", compact["signal_plan"])
 
     def test_compact_cycle_removes_verbose_results(self):
         cycle = {
