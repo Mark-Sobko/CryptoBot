@@ -10,6 +10,7 @@ os.environ.setdefault("TELEGRAM_CHAT_ID", "")
 
 from scripts.run_strategy_observer import (
     build_signal_plan,
+    classify_signal_status,
     compact_cycle,
     compact_setup,
     news_score_bonus,
@@ -120,6 +121,25 @@ class StrategyObserverTests(unittest.TestCase):
         self.assertAlmostEqual(stop, 1.0035)
         self.assertTrue(adjusted)
 
+    def test_classify_signal_status_waits_for_m5_confirmation(self):
+        status, reason = classify_signal_status(
+            score=95,
+            threshold=55,
+            analysis={"m5_ok": False},
+        )
+
+        self.assertEqual(status, "WAIT_CONFIRMATION")
+        self.assertEqual(reason, "waiting_for:m5")
+
+        status, reason = classify_signal_status(
+            score=95,
+            threshold=55,
+            analysis={"m5_ok": True},
+        )
+
+        self.assertEqual(status, "SIGNAL")
+        self.assertEqual(reason, "")
+
     def test_summarize_cycle_reports_counts_reasons_and_near_setups(self):
         cycle = {
             "results": [
@@ -175,11 +195,12 @@ class StrategyObserverTests(unittest.TestCase):
                 }
             ]
         }
-        signal_cycle = {
+        waiting_cycle = {
             "results": [
                 {
                     "symbol": "WIFUSDT",
-                    "status": "SIGNAL",
+                    "status": "WAIT_CONFIRMATION",
+                    "reason": "waiting_for:m5",
                     "trend": "SHORT",
                     "score": 95,
                     "threshold": 55,
@@ -203,20 +224,61 @@ class StrategyObserverTests(unittest.TestCase):
                 }
             ]
         }
+        signal_cycle = {
+            "results": [
+                {
+                    "symbol": "WIFUSDT",
+                    "status": "SIGNAL",
+                    "trend": "SHORT",
+                    "score": 95,
+                    "threshold": 55,
+                    "would_route": "LIMIT",
+                    "poi": {"side": "SHORT"},
+                    "analysis": {"poi_ok": True, "m5_ok": True},
+                    "signal_plan": {
+                        "route": "LIMIT",
+                        "order_type": "Limit",
+                        "execution_entry": 0.15405,
+                        "stop_loss": 0.1542,
+                        "execution_tp": 0.15315,
+                        "execution_rr": 6.0,
+                        "protective_stop_loss": 0.154589175,
+                        "protective_stop_adjusted": True,
+                        "protective_execution_rr": 1.6692,
+                        "route_reference_rr": 0.75,
+                        "min_rr": 1.0,
+                        "min_stop_pct": 0.35,
+                    },
+                }
+            ]
+        }
 
-        summary = summarize_cycles([near_setup_cycle, near_setup_cycle, signal_cycle])
+        summary = summarize_cycles([
+            near_setup_cycle,
+            near_setup_cycle,
+            waiting_cycle,
+            signal_cycle,
+        ])
 
-        self.assertEqual(summary["status_counts"], {"REJECT": 2, "SIGNAL": 1})
+        self.assertEqual(
+            summary["status_counts"],
+            {"REJECT": 2, "SIGNAL": 1, "WAIT_CONFIRMATION": 1},
+        )
         self.assertEqual(summary["signals_total"], 1)
+        self.assertEqual(summary["waiting_setups_total"], 1)
         self.assertEqual(summary["errors_total"], 0)
         self.assertEqual(len(summary["signals"]), 1)
-        self.assertEqual(summary["signals"][0]["failed_checks"], ["m5"])
         self.assertEqual(summary["signals"][0]["signal_plan"]["order_type"], "Limit")
         self.assertEqual(summary["signals"][0]["signal_plan"]["execution_rr"], 6.0)
         self.assertTrue(summary["signals"][0]["signal_plan"]["protective_stop_adjusted"])
+        self.assertEqual(len(summary["waiting_setups"]), 1)
+        self.assertEqual(summary["waiting_setups"][0]["failed_checks"], ["m5"])
         self.assertEqual(summary["signal_counts"], {"WIFUSDT": 1})
         self.assertEqual(summary["signal_route_counts"], {"LIMIT": 1})
-        self.assertEqual(summary["signal_failed_check_counts"], {"m5": 1})
+        self.assertEqual(summary["signal_failed_check_counts"], {})
+        self.assertEqual(summary["waiting_setup_counts"], {"WIFUSDT": 1})
+        self.assertEqual(summary["waiting_setup_route_counts"], {"LIMIT": 1})
+        self.assertEqual(summary["waiting_setup_failed_check_counts"], {"m5": 1})
         self.assertEqual(len(summary["near_setups"]), 1)
         self.assertEqual(summary["near_setup_counts"], {"RENDERUSDT": 2})
         self.assertEqual(summary["near_setup_failed_check_counts"], {"m5": 2, "poi": 2})
@@ -259,6 +321,7 @@ class StrategyObserverTests(unittest.TestCase):
             "duration_s": 1.2,
             "symbols_scanned": 1,
             "signals": 0,
+            "waiting_setups": 0,
             "macro": {"BTC_trend": 1.0},
             "news": {"action": "NONE"},
             "results": [{"symbol": "BTCUSDT", "status": "FLAT", "trend": "FLAT"}],
@@ -267,6 +330,7 @@ class StrategyObserverTests(unittest.TestCase):
         compact = compact_cycle(cycle)
 
         self.assertNotIn("results", compact)
+        self.assertEqual(compact["waiting_setups"], 0)
         self.assertEqual(compact["summary"]["status_counts"], {"FLAT": 1})
 
 

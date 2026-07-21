@@ -213,6 +213,31 @@ def failed_checks(result: dict[str, Any]) -> list[str]:
     ]
 
 
+def execution_wait_checks(analysis: dict[str, Any]) -> list[str]:
+    checks = (("m5", "m5_ok"),)
+    return [
+        label
+        for label, key in checks
+        if key in analysis and not bool(analysis.get(key))
+    ]
+
+
+def classify_signal_status(
+    *,
+    score: int,
+    threshold: int,
+    analysis: dict[str, Any],
+) -> tuple[str, str]:
+    if score < threshold:
+        return "REJECT", f"score_below_threshold:{score}/{threshold}"
+
+    waiting_for = execution_wait_checks(analysis)
+    if waiting_for:
+        return "WAIT_CONFIRMATION", f"waiting_for:{','.join(waiting_for)}"
+
+    return "SIGNAL", ""
+
+
 def compact_setup(result: dict[str, Any]) -> dict[str, Any]:
     compact = {
         "symbol": result.get("symbol", ""),
@@ -265,6 +290,11 @@ def summarize_cycle(cycle: dict[str, Any]) -> dict[str, Any]:
         for item in results
         if isinstance(item, dict) and item.get("status") == "SIGNAL"
     ]
+    waiting_setups = [
+        compact_setup(item)
+        for item in results
+        if isinstance(item, dict) and item.get("status") == "WAIT_CONFIRMATION"
+    ]
     errors = [
         compact_setup(item)
         for item in results
@@ -283,6 +313,7 @@ def summarize_cycle(cycle: dict[str, Any]) -> dict[str, Any]:
         "trend_counts": dict(sorted(trend_counts.items())),
         "reject_reasons": dict(sorted(reject_reasons.items())),
         "signals": signals,
+        "waiting_setups": waiting_setups,
         "errors": errors,
         "near_setups": near_setups,
     }
@@ -293,12 +324,17 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
     trend_counts: Counter[str] = Counter()
     reject_reasons: Counter[str] = Counter()
     signals: list[dict[str, Any]] = []
+    waiting_setups: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     signals_by_key: dict[tuple[Any, ...], dict[str, Any]] = {}
+    waiting_setups_by_key: dict[tuple[Any, ...], dict[str, Any]] = {}
     near_setups_by_key: dict[tuple[Any, ...], dict[str, Any]] = {}
     signal_counts: Counter[str] = Counter()
     signal_route_counts: Counter[str] = Counter()
     signal_failed_check_counts: Counter[str] = Counter()
+    waiting_setup_counts: Counter[str] = Counter()
+    waiting_setup_route_counts: Counter[str] = Counter()
+    waiting_setup_failed_check_counts: Counter[str] = Counter()
     near_setup_counts: Counter[str] = Counter()
     near_setup_failed_check_counts: Counter[str] = Counter()
 
@@ -308,6 +344,7 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
         trend_counts.update(summary["trend_counts"])
         reject_reasons.update(summary["reject_reasons"])
         signals.extend(summary["signals"])
+        waiting_setups.extend(summary["waiting_setups"])
         errors.extend(summary["errors"])
         for signal in summary["signals"]:
             signal_counts.update([str(signal.get("symbol", "UNKNOWN"))])
@@ -320,6 +357,21 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
                 tuple(signal.get("failed_checks", [])),
             )
             signals_by_key[key] = signal
+        for setup in summary["waiting_setups"]:
+            waiting_setup_counts.update([str(setup.get("symbol", "UNKNOWN"))])
+            waiting_setup_route_counts.update(
+                [str(setup.get("would_route", "UNKNOWN"))]
+            )
+            waiting_setup_failed_check_counts.update(
+                str(item) for item in setup.get("failed_checks", [])
+            )
+            key = (
+                setup.get("symbol"),
+                setup.get("trend"),
+                setup.get("would_route"),
+                tuple(setup.get("failed_checks", [])),
+            )
+            waiting_setups_by_key[key] = setup
         for setup in summary["near_setups"]:
             near_setup_counts.update([str(setup.get("symbol", "UNKNOWN"))])
             near_setup_failed_check_counts.update(str(item) for item in setup.get("failed_checks", []))
@@ -336,13 +388,20 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
         "trend_counts": dict(sorted(trend_counts.items())),
         "reject_reasons": dict(sorted(reject_reasons.items())),
         "signals_total": len(signals),
+        "waiting_setups_total": len(waiting_setups),
         "errors_total": len(errors),
         "signals": list(signals_by_key.values()),
+        "waiting_setups": list(waiting_setups_by_key.values()),
         "errors": errors,
         "near_setups": list(near_setups_by_key.values()),
         "signal_counts": dict(sorted(signal_counts.items())),
         "signal_route_counts": dict(sorted(signal_route_counts.items())),
         "signal_failed_check_counts": dict(sorted(signal_failed_check_counts.items())),
+        "waiting_setup_counts": dict(sorted(waiting_setup_counts.items())),
+        "waiting_setup_route_counts": dict(sorted(waiting_setup_route_counts.items())),
+        "waiting_setup_failed_check_counts": dict(
+            sorted(waiting_setup_failed_check_counts.items())
+        ),
         "near_setup_counts": dict(sorted(near_setup_counts.items())),
         "near_setup_failed_check_counts": dict(sorted(near_setup_failed_check_counts.items())),
     }
@@ -355,6 +414,7 @@ def compact_cycle(cycle: dict[str, Any]) -> dict[str, Any]:
         "duration_s": cycle.get("duration_s"),
         "symbols_scanned": cycle.get("symbols_scanned"),
         "signals": cycle.get("signals"),
+        "waiting_setups": cycle.get("waiting_setups"),
         "macro": cycle.get("macro"),
         "news": cycle.get("news"),
         "summary": cycle.get("summary", summarize_cycle(cycle)),
@@ -456,13 +516,23 @@ class ReadOnlyStrategyObserver:
             "liquidity_context": liquidity_context,
         }
 
-        score = max(0, min(100, self.scoring.calculate(analysis) + news_score_bonus(news.get("action", "NONE"), trend)))
-        status = "SIGNAL" if score >= threshold else "REJECT"
-        reason = "" if status == "SIGNAL" else f"score_below_threshold:{score}/{threshold}"
+        score = max(
+            0,
+            min(
+                100,
+                self.scoring.calculate(analysis)
+                + news_score_bonus(news.get("action", "NONE"), trend),
+            ),
+        )
+        status, reason = classify_signal_status(
+            score=score,
+            threshold=threshold,
+            analysis=analysis,
+        )
         rr_status = None
         signal_plan = None
 
-        if status == "SIGNAL" and final_poi:
+        if status in ("SIGNAL", "WAIT_CONFIRMATION") and final_poi:
             current_price = safe_float(data["1h"]["close"].iloc[-2])
             sl_raw = final_poi.get("bottom") if trend == "LONG" else final_poi.get("top")
             sl_price = safe_float(sl_raw, current_price)
@@ -525,6 +595,9 @@ class ReadOnlyStrategyObserver:
                 )
 
         signals = [item for item in results if item.get("status") == "SIGNAL"]
+        waiting_setups = [
+            item for item in results if item.get("status") == "WAIT_CONFIRMATION"
+        ]
         errors = [item for item in results if item.get("status") == "ERROR"]
         return {
             "status": "ERROR" if errors else "OK",
@@ -534,6 +607,7 @@ class ReadOnlyStrategyObserver:
             "macro": macro,
             "symbols_scanned": len(results),
             "signals": len(signals),
+            "waiting_setups": len(waiting_setups),
             "results": results,
         }
 
