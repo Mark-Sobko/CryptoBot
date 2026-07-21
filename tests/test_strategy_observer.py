@@ -118,12 +118,12 @@ class StrategyObserverTests(unittest.TestCase):
         self.assertEqual(len(summary["near_setups"]), 1)
         self.assertEqual(summary["near_setups"][0]["symbol"], "ETHUSDT")
         self.assertEqual(
-            summary["near_setups"][0]["blockers"],
+            summary["near_setups"][0]["failed_checks"],
             ["poi", "m5", "pd_alignment", "liquidity_target"],
         )
 
-    def test_summarize_cycles_deduplicates_near_setups(self):
-        cycle = {
+    def test_summarize_cycles_reports_signal_and_near_setup_frequencies(self):
+        near_setup_cycle = {
             "results": [
                 {
                     "symbol": "RENDERUSDT",
@@ -134,15 +134,34 @@ class StrategyObserverTests(unittest.TestCase):
                 }
             ]
         }
+        signal_cycle = {
+            "results": [
+                {
+                    "symbol": "WIFUSDT",
+                    "status": "SIGNAL",
+                    "trend": "SHORT",
+                    "score": 95,
+                    "threshold": 55,
+                    "would_route": "LIMIT",
+                    "poi": {"side": "SHORT"},
+                    "analysis": {"poi_ok": True, "m5_ok": False},
+                }
+            ]
+        }
 
-        summary = summarize_cycles([cycle, cycle])
+        summary = summarize_cycles([near_setup_cycle, near_setup_cycle, signal_cycle])
 
-        self.assertEqual(summary["status_counts"], {"REJECT": 2})
-        self.assertEqual(summary["signals_total"], 0)
+        self.assertEqual(summary["status_counts"], {"REJECT": 2, "SIGNAL": 1})
+        self.assertEqual(summary["signals_total"], 1)
         self.assertEqual(summary["errors_total"], 0)
+        self.assertEqual(len(summary["signals"]), 1)
+        self.assertEqual(summary["signals"][0]["failed_checks"], ["m5"])
+        self.assertEqual(summary["signal_counts"], {"WIFUSDT": 1})
+        self.assertEqual(summary["signal_route_counts"], {"LIMIT": 1})
+        self.assertEqual(summary["signal_failed_check_counts"], {"m5": 1})
         self.assertEqual(len(summary["near_setups"]), 1)
         self.assertEqual(summary["near_setup_counts"], {"RENDERUSDT": 2})
-        self.assertEqual(summary["near_setup_blocker_counts"], {"m5": 2, "poi": 2})
+        self.assertEqual(summary["near_setup_failed_check_counts"], {"m5": 2, "poi": 2})
 
     def test_compact_cycle_removes_verbose_results(self):
         cycle = {

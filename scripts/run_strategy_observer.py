@@ -121,7 +121,7 @@ def compact_poi(poi: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
-def signal_blockers(result: dict[str, Any]) -> list[str]:
+def failed_checks(result: dict[str, Any]) -> list[str]:
     analysis = result.get("analysis")
     if not isinstance(analysis, dict):
         return []
@@ -152,9 +152,9 @@ def compact_setup(result: dict[str, Any]) -> dict[str, Any]:
         "would_route": result.get("would_route"),
         "has_poi": bool(result.get("poi")),
     }
-    blockers = signal_blockers(result)
-    if blockers:
-        compact["blockers"] = blockers
+    failed = failed_checks(result)
+    if failed:
+        compact["failed_checks"] = failed
     return compact
 
 
@@ -206,9 +206,13 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
     reject_reasons: Counter[str] = Counter()
     signals: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
+    signals_by_key: dict[tuple[Any, ...], dict[str, Any]] = {}
     near_setups_by_key: dict[tuple[Any, ...], dict[str, Any]] = {}
+    signal_counts: Counter[str] = Counter()
+    signal_route_counts: Counter[str] = Counter()
+    signal_failed_check_counts: Counter[str] = Counter()
     near_setup_counts: Counter[str] = Counter()
-    near_setup_blocker_counts: Counter[str] = Counter()
+    near_setup_failed_check_counts: Counter[str] = Counter()
 
     for cycle in cycles:
         summary = summarize_cycle(cycle)
@@ -217,14 +221,25 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
         reject_reasons.update(summary["reject_reasons"])
         signals.extend(summary["signals"])
         errors.extend(summary["errors"])
+        for signal in summary["signals"]:
+            signal_counts.update([str(signal.get("symbol", "UNKNOWN"))])
+            signal_route_counts.update([str(signal.get("would_route", "UNKNOWN"))])
+            signal_failed_check_counts.update(str(item) for item in signal.get("failed_checks", []))
+            key = (
+                signal.get("symbol"),
+                signal.get("trend"),
+                signal.get("would_route"),
+                tuple(signal.get("failed_checks", [])),
+            )
+            signals_by_key[key] = signal
         for setup in summary["near_setups"]:
             near_setup_counts.update([str(setup.get("symbol", "UNKNOWN"))])
-            near_setup_blocker_counts.update(str(item) for item in setup.get("blockers", []))
+            near_setup_failed_check_counts.update(str(item) for item in setup.get("failed_checks", []))
             key = (
                 setup.get("symbol"),
                 setup.get("trend"),
                 setup.get("reason"),
-                tuple(setup.get("blockers", [])),
+                tuple(setup.get("failed_checks", [])),
             )
             near_setups_by_key[key] = setup
 
@@ -234,11 +249,14 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
         "reject_reasons": dict(sorted(reject_reasons.items())),
         "signals_total": len(signals),
         "errors_total": len(errors),
-        "signals": signals,
+        "signals": list(signals_by_key.values()),
         "errors": errors,
         "near_setups": list(near_setups_by_key.values()),
+        "signal_counts": dict(sorted(signal_counts.items())),
+        "signal_route_counts": dict(sorted(signal_route_counts.items())),
+        "signal_failed_check_counts": dict(sorted(signal_failed_check_counts.items())),
         "near_setup_counts": dict(sorted(near_setup_counts.items())),
-        "near_setup_blocker_counts": dict(sorted(near_setup_blocker_counts.items())),
+        "near_setup_failed_check_counts": dict(sorted(near_setup_failed_check_counts.items())),
     }
 
 
