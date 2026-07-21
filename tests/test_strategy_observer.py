@@ -15,11 +15,16 @@ from scripts.run_strategy_observer import (
     compact_cycle,
     compact_setup,
     count_blocker_details,
+    count_setup_roles,
     effective_liquidity_target,
+    execution_waits,
     news_score_bonus,
+    hard_blockers,
+    missing_confluences,
     parse_symbols,
     protective_stop_loss,
     risk_reward_ratio,
+    smc_blocker_reason,
     summarize_cycle,
     summarize_cycles,
     validate_market_data,
@@ -172,6 +177,76 @@ class StrategyObserverTests(unittest.TestCase):
         self.assertEqual(status, "SIGNAL")
         self.assertEqual(reason, "")
 
+    def test_setup_role_helpers_separate_hard_wait_and_confluence_checks(self):
+        rejected = {
+            "status": "REJECT",
+            "trend": "SHORT",
+            "analysis": {
+                "direction": "SHORT",
+                "structure_ok": True,
+                "poi_ok": False,
+                "m5_ok": False,
+                "macro_ok": True,
+                "is_pd_aligned": False,
+                "has_liquidity_target": False,
+                "news_action": "NONE",
+            },
+        }
+        waiting = {
+            "status": "WAIT_CONFIRMATION",
+            "trend": "SHORT",
+            "analysis": {
+                "direction": "SHORT",
+                "structure_ok": True,
+                "poi_ok": True,
+                "m5_ok": False,
+                "macro_ok": True,
+                "is_pd_aligned": True,
+                "has_liquidity_target": True,
+                "news_action": "NONE",
+            },
+        }
+
+        self.assertEqual(hard_blockers(rejected), ["poi"])
+        self.assertEqual(
+            missing_confluences(rejected),
+            ["m5", "pd_alignment", "liquidity_target"],
+        )
+        self.assertEqual(execution_waits(rejected), [])
+        self.assertEqual(hard_blockers(waiting), [])
+        self.assertEqual(missing_confluences(waiting), [])
+        self.assertEqual(execution_waits(waiting), ["m5"])
+
+    def test_hard_blockers_accept_sweep_as_structure_confirmation(self):
+        result = {
+            "status": "REJECT",
+            "trend": "LONG",
+            "analysis": {
+                "direction": "LONG",
+                "structure_ok": False,
+                "liquidity_sweep": True,
+                "poi_ok": True,
+            },
+        }
+
+        self.assertEqual(hard_blockers(result), [])
+
+    def test_smc_blocker_reason_reports_mtf_cause(self):
+        self.assertEqual(
+            smc_blocker_reason({"smc_ok": False, "mtf_aligned": False}),
+            "mtf_not_aligned",
+        )
+        self.assertEqual(
+            smc_blocker_reason(
+                {
+                    "smc_ok": False,
+                    "mtf_aligned": True,
+                    "htf_structure_ok": False,
+                }
+            ),
+            "htf_structure_not_ok",
+        )
+
     def test_blocker_details_reports_missing_poi_and_m5_metrics(self):
         details = blocker_details(
             {
@@ -182,6 +257,9 @@ class StrategyObserverTests(unittest.TestCase):
                     "m5_ok": False,
                     "is_pd_aligned": False,
                     "has_liquidity_target": False,
+                    "mtf_aligned": False,
+                    "htf_direction": "LONG",
+                    "ltf_direction": "SHORT",
                     "has_eql": True,
                     "liquidity_context": "IMBALANCE_DRIVEN",
                 },
@@ -196,6 +274,7 @@ class StrategyObserverTests(unittest.TestCase):
         )
 
         self.assertEqual(details["poi"]["reason"], "missing")
+        self.assertEqual(details["poi"]["smc_reason"], "mtf_not_aligned")
         self.assertFalse(details["m5"]["is_trigger"])
         self.assertEqual(details["liquidity_target"]["context"], "IMBALANCE_DRIVEN")
 
@@ -253,6 +332,27 @@ class StrategyObserverTests(unittest.TestCase):
         self.assertEqual(counts["pd_alignment_counts"], {"false": 2})
         self.assertEqual(counts["liquidity_target_counts"], {"missing": 2})
 
+    def test_count_setup_roles_reports_separate_aggregate_categories(self):
+        counts = count_setup_roles(
+            [
+                {
+                    "hard_blockers": ["poi"],
+                    "missing_confluences": ["m5", "pd_alignment"],
+                },
+                {
+                    "execution_waits": ["m5"],
+                    "missing_confluences": ["liquidity_target"],
+                },
+            ]
+        )
+
+        self.assertEqual(counts["hard_blocker_counts"], {"poi": 1})
+        self.assertEqual(
+            counts["missing_confluence_counts"],
+            {"liquidity_target": 1, "m5": 1, "pd_alignment": 1},
+        )
+        self.assertEqual(counts["execution_wait_counts"], {"m5": 1})
+
     def test_summarize_cycle_reports_counts_reasons_and_near_setups(self):
         cycle = {
             "results": [
@@ -297,10 +397,16 @@ class StrategyObserverTests(unittest.TestCase):
             summary["near_setups"][0]["failed_checks"],
             ["poi", "m5", "pd_alignment", "liquidity_target"],
         )
+        self.assertEqual(summary["near_setups"][0]["hard_blockers"], ["poi"])
+        self.assertEqual(
+            summary["near_setups"][0]["missing_confluences"],
+            ["m5", "pd_alignment", "liquidity_target"],
+        )
         self.assertEqual(
             summary["near_setups"][0]["blocker_details"]["poi"]["reason"],
             "missing",
         )
+        self.assertEqual(summary["setup_role_counts"]["hard_blocker_counts"], {"poi": 1})
         self.assertEqual(
             summary["blocker_detail_counts"]["poi_reason_counts"],
             {"missing": 1},
@@ -402,9 +508,12 @@ class StrategyObserverTests(unittest.TestCase):
         self.assertEqual(summary["waiting_setup_counts"], {"WIFUSDT": 1})
         self.assertEqual(summary["waiting_setup_route_counts"], {"LIMIT": 1})
         self.assertEqual(summary["waiting_setup_failed_check_counts"], {"m5": 1})
+        self.assertEqual(summary["waiting_setup_execution_wait_counts"], {"m5": 1})
         self.assertEqual(len(summary["near_setups"]), 1)
         self.assertEqual(summary["near_setup_counts"], {"RENDERUSDT": 2})
         self.assertEqual(summary["near_setup_failed_check_counts"], {"m5": 2, "poi": 2})
+        self.assertEqual(summary["near_setup_hard_blocker_counts"], {"poi": 2})
+        self.assertEqual(summary["near_setup_missing_confluence_counts"], {"m5": 2})
         self.assertEqual(
             summary["blocker_detail_counts"]["poi_reason_counts"],
             {"missing": 2},

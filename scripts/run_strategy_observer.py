@@ -212,24 +212,92 @@ def build_signal_plan(
     }
 
 
-def failed_checks(result: dict[str, Any]) -> list[str]:
+def _analysis_from_result(result: dict[str, Any]) -> dict[str, Any]:
     analysis = result.get("analysis")
     if not isinstance(analysis, dict):
+        return {}
+    return analysis
+
+
+def hard_blockers(result: dict[str, Any]) -> list[str]:
+    analysis = _analysis_from_result(result)
+    if not analysis:
         return []
 
-    blocker_checks = (
-        ("structure", "structure_ok"),
-        ("poi", "poi_ok"),
+    blockers: list[str] = []
+    direction = str(analysis.get("direction") or result.get("trend", "")).upper()
+    if direction not in ("LONG", "SHORT"):
+        blockers.append("direction")
+
+    structure_known = any(
+        key in analysis for key in ("structure_ok", "liquidity_sweep", "sweep_active")
+    )
+    structure_confirmed = bool(analysis.get("structure_ok", False)) or bool(
+        analysis.get("liquidity_sweep", analysis.get("sweep_active", False))
+    )
+    if structure_known and not structure_confirmed:
+        blockers.append("structure")
+
+    if "poi_ok" in analysis and not bool(analysis.get("poi_ok")):
+        blockers.append("poi")
+
+    if str(analysis.get("news_action", "NONE")).upper() == "BLOCK":
+        blockers.append("news")
+
+    return blockers
+
+
+def execution_waits(result: dict[str, Any]) -> list[str]:
+    if result.get("status") != "WAIT_CONFIRMATION":
+        return []
+
+    analysis = _analysis_from_result(result)
+    if not analysis:
+        return []
+
+    return execution_wait_checks(analysis)
+
+
+def missing_confluences(result: dict[str, Any]) -> list[str]:
+    analysis = _analysis_from_result(result)
+    if not analysis:
+        return []
+
+    confluence_checks = (
         ("m5", "m5_ok"),
         ("macro", "macro_ok"),
         ("pd_alignment", "is_pd_aligned"),
         ("liquidity_target", "has_liquidity_target"),
     )
+    waits = set(execution_waits(result))
     return [
         label
-        for label, key in blocker_checks
+        for label, key in confluence_checks
         if key in analysis and not bool(analysis.get(key))
+        if label not in waits
     ]
+
+
+def failed_checks(result: dict[str, Any]) -> list[str]:
+    checks: list[str] = []
+    for label in hard_blockers(result) + execution_waits(result) + missing_confluences(result):
+        if label not in checks:
+            checks.append(label)
+    return checks
+
+
+def smc_blocker_reason(analysis: dict[str, Any]) -> str:
+    if bool(analysis.get("smc_ok", False)):
+        return "ok"
+    if "mtf_aligned" in analysis and not bool(analysis.get("mtf_aligned")):
+        return "mtf_not_aligned"
+    if "htf_structure_ok" in analysis and not bool(analysis.get("htf_structure_ok")):
+        return "htf_structure_not_ok"
+    if "poi_side_aligned" in analysis and not bool(analysis.get("poi_side_aligned")):
+        return "poi_side_mismatch"
+    if "ltf_structure_ok" in analysis and not bool(analysis.get("ltf_structure_ok")):
+        return "ltf_structure_not_ok"
+    return "not_confirmed"
 
 
 def poi_blocker_reason(result: dict[str, Any], analysis: dict[str, Any]) -> str:
@@ -249,12 +317,24 @@ def poi_blocker_reason(result: dict[str, Any], analysis: dict[str, Any]) -> str:
 
 
 def blocker_details(result: dict[str, Any]) -> dict[str, Any]:
-    analysis = result.get("analysis")
-    if not isinstance(analysis, dict):
+    analysis = _analysis_from_result(result)
+    if not analysis:
         return {}
 
     failed = set(failed_checks(result))
     details: dict[str, Any] = {}
+
+    if "structure" in failed:
+        details["structure"] = {
+            "structure_ok": bool(analysis.get("structure_ok", False)),
+            "liquidity_sweep": bool(
+                analysis.get("liquidity_sweep", analysis.get("sweep_active", False))
+            ),
+            "htf_structure_ok": bool(analysis.get("htf_structure_ok", False)),
+            "ltf_structure_ok": bool(analysis.get("ltf_structure_ok", False)),
+            "htf_direction": analysis.get("htf_direction"),
+            "ltf_direction": analysis.get("ltf_direction"),
+        }
 
     if "poi" in failed:
         poi = result.get("poi") if isinstance(result.get("poi"), dict) else {}
@@ -265,6 +345,12 @@ def blocker_details(result: dict[str, Any]) -> dict[str, Any]:
             "trend": result.get("trend") or analysis.get("trend"),
             "side_aligned": bool(analysis.get("poi_side_aligned", False)),
             "smc_ok": bool(analysis.get("smc_ok", False)),
+            "smc_reason": smc_blocker_reason(analysis),
+            "mtf_aligned": bool(analysis.get("mtf_aligned", False)),
+            "htf_direction": analysis.get("htf_direction"),
+            "ltf_direction": analysis.get("ltf_direction"),
+            "htf_structure_ok": bool(analysis.get("htf_structure_ok", False)),
+            "ltf_structure_ok": bool(analysis.get("ltf_structure_ok", False)),
         }
 
     if "m5" in failed:
@@ -289,6 +375,12 @@ def blocker_details(result: dict[str, Any]) -> dict[str, Any]:
             "has_ql": bool(analysis.get("has_ql", False)),
             "context": analysis.get("liquidity_context"),
         }
+
+    if "macro" in failed:
+        details["macro"] = {"macro_ok": bool(analysis.get("macro_ok", False))}
+
+    if "news" in failed:
+        details["news"] = {"action": str(analysis.get("news_action", "NONE")).upper()}
 
     return details
 
@@ -332,6 +424,15 @@ def compact_setup(result: dict[str, Any]) -> dict[str, Any]:
     failed = failed_checks(result)
     if failed:
         compact["failed_checks"] = failed
+    hard = hard_blockers(result)
+    if hard:
+        compact["hard_blockers"] = hard
+    waits = execution_waits(result)
+    if waits:
+        compact["execution_waits"] = waits
+    missing = missing_confluences(result)
+    if missing:
+        compact["missing_confluences"] = missing
     details = blocker_details(result)
     if details:
         compact["blocker_details"] = details
@@ -354,14 +455,43 @@ def compact_setup(result: dict[str, Any]) -> dict[str, Any]:
     return compact
 
 
+def count_setup_roles(setups: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+    counts = {
+        "hard_blocker_counts": Counter(),
+        "missing_confluence_counts": Counter(),
+        "execution_wait_counts": Counter(),
+    }
+
+    for setup in setups:
+        counts["hard_blocker_counts"].update(
+            str(item) for item in setup.get("hard_blockers", [])
+        )
+        counts["missing_confluence_counts"].update(
+            str(item) for item in setup.get("missing_confluences", [])
+        )
+        counts["execution_wait_counts"].update(
+            str(item) for item in setup.get("execution_waits", [])
+        )
+
+    return {
+        name: dict(sorted(counter.items()))
+        for name, counter in counts.items()
+        if counter
+    }
+
+
 def count_blocker_details(setups: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
     counts = {
         "poi_reason_counts": Counter(),
+        "poi_smc_reason_counts": Counter(),
         "poi_type_counts": Counter(),
+        "structure_counts": Counter(),
         "m5_trigger_counts": Counter(),
         "pd_alignment_counts": Counter(),
         "liquidity_target_counts": Counter(),
         "liquidity_context_counts": Counter(),
+        "macro_counts": Counter(),
+        "news_action_counts": Counter(),
     }
 
     for setup in setups:
@@ -372,7 +502,20 @@ def count_blocker_details(setups: list[dict[str, Any]]) -> dict[str, dict[str, i
         poi = details.get("poi")
         if isinstance(poi, dict):
             counts["poi_reason_counts"].update([str(poi.get("reason", "unknown"))])
+            counts["poi_smc_reason_counts"].update(
+                [str(poi.get("smc_reason") or "unknown")]
+            )
             counts["poi_type_counts"].update([str(poi.get("type") or "missing")])
+
+        structure = details.get("structure")
+        if isinstance(structure, dict):
+            counts["structure_counts"].update(
+                [
+                    "confirmed"
+                    if structure.get("structure_ok") or structure.get("liquidity_sweep")
+                    else "missing"
+                ]
+            )
 
         m5 = details.get("m5")
         if isinstance(m5, dict):
@@ -392,6 +535,18 @@ def count_blocker_details(setups: list[dict[str, Any]]) -> dict[str, dict[str, i
             counts["liquidity_target_counts"].update([target_key])
             counts["liquidity_context_counts"].update(
                 [str(liquidity.get("context") or "unknown")]
+            )
+
+        macro = details.get("macro")
+        if isinstance(macro, dict):
+            counts["macro_counts"].update(
+                [str(bool(macro.get("macro_ok", False))).lower()]
+            )
+
+        news = details.get("news")
+        if isinstance(news, dict):
+            counts["news_action_counts"].update(
+                [str(news.get("action") or "unknown")]
             )
 
     return {
@@ -446,6 +601,7 @@ def summarize_cycle(cycle: dict[str, Any]) -> dict[str, Any]:
         "waiting_setups": waiting_setups,
         "errors": errors,
         "near_setups": near_setups,
+        "setup_role_counts": count_setup_roles(signals + waiting_setups + near_setups),
         "blocker_detail_counts": count_blocker_details(
             signals + waiting_setups + near_setups
         ),
@@ -465,12 +621,22 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
     signal_counts: Counter[str] = Counter()
     signal_route_counts: Counter[str] = Counter()
     signal_failed_check_counts: Counter[str] = Counter()
+    signal_hard_blocker_counts: Counter[str] = Counter()
+    signal_missing_confluence_counts: Counter[str] = Counter()
+    signal_execution_wait_counts: Counter[str] = Counter()
     waiting_setup_counts: Counter[str] = Counter()
     waiting_setup_route_counts: Counter[str] = Counter()
     waiting_setup_failed_check_counts: Counter[str] = Counter()
+    waiting_setup_hard_blocker_counts: Counter[str] = Counter()
+    waiting_setup_missing_confluence_counts: Counter[str] = Counter()
+    waiting_setup_execution_wait_counts: Counter[str] = Counter()
     near_setup_counts: Counter[str] = Counter()
     near_setup_failed_check_counts: Counter[str] = Counter()
+    near_setup_hard_blocker_counts: Counter[str] = Counter()
+    near_setup_missing_confluence_counts: Counter[str] = Counter()
+    near_setup_execution_wait_counts: Counter[str] = Counter()
     blocker_detail_counts: dict[str, Counter[str]] = {}
+    setup_role_counts: dict[str, Counter[str]] = {}
 
     for cycle in cycles:
         summary = summarize_cycle(cycle)
@@ -483,10 +649,20 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
         for name, values in summary.get("blocker_detail_counts", {}).items():
             counter = blocker_detail_counts.setdefault(name, Counter())
             counter.update(values)
+        for name, values in summary.get("setup_role_counts", {}).items():
+            counter = setup_role_counts.setdefault(name, Counter())
+            counter.update(values)
         for signal in summary["signals"]:
             signal_counts.update([str(signal.get("symbol", "UNKNOWN"))])
             signal_route_counts.update([str(signal.get("would_route", "UNKNOWN"))])
             signal_failed_check_counts.update(str(item) for item in signal.get("failed_checks", []))
+            signal_hard_blocker_counts.update(str(item) for item in signal.get("hard_blockers", []))
+            signal_missing_confluence_counts.update(
+                str(item) for item in signal.get("missing_confluences", [])
+            )
+            signal_execution_wait_counts.update(
+                str(item) for item in signal.get("execution_waits", [])
+            )
             key = (
                 signal.get("symbol"),
                 signal.get("trend"),
@@ -502,6 +678,15 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
             waiting_setup_failed_check_counts.update(
                 str(item) for item in setup.get("failed_checks", [])
             )
+            waiting_setup_hard_blocker_counts.update(
+                str(item) for item in setup.get("hard_blockers", [])
+            )
+            waiting_setup_missing_confluence_counts.update(
+                str(item) for item in setup.get("missing_confluences", [])
+            )
+            waiting_setup_execution_wait_counts.update(
+                str(item) for item in setup.get("execution_waits", [])
+            )
             key = (
                 setup.get("symbol"),
                 setup.get("trend"),
@@ -512,6 +697,15 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
         for setup in summary["near_setups"]:
             near_setup_counts.update([str(setup.get("symbol", "UNKNOWN"))])
             near_setup_failed_check_counts.update(str(item) for item in setup.get("failed_checks", []))
+            near_setup_hard_blocker_counts.update(
+                str(item) for item in setup.get("hard_blockers", [])
+            )
+            near_setup_missing_confluence_counts.update(
+                str(item) for item in setup.get("missing_confluences", [])
+            )
+            near_setup_execution_wait_counts.update(
+                str(item) for item in setup.get("execution_waits", [])
+            )
             key = (
                 setup.get("symbol"),
                 setup.get("trend"),
@@ -534,13 +728,42 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
         "signal_counts": dict(sorted(signal_counts.items())),
         "signal_route_counts": dict(sorted(signal_route_counts.items())),
         "signal_failed_check_counts": dict(sorted(signal_failed_check_counts.items())),
+        "signal_hard_blocker_counts": dict(sorted(signal_hard_blocker_counts.items())),
+        "signal_missing_confluence_counts": dict(
+            sorted(signal_missing_confluence_counts.items())
+        ),
+        "signal_execution_wait_counts": dict(
+            sorted(signal_execution_wait_counts.items())
+        ),
         "waiting_setup_counts": dict(sorted(waiting_setup_counts.items())),
         "waiting_setup_route_counts": dict(sorted(waiting_setup_route_counts.items())),
         "waiting_setup_failed_check_counts": dict(
             sorted(waiting_setup_failed_check_counts.items())
         ),
+        "waiting_setup_hard_blocker_counts": dict(
+            sorted(waiting_setup_hard_blocker_counts.items())
+        ),
+        "waiting_setup_missing_confluence_counts": dict(
+            sorted(waiting_setup_missing_confluence_counts.items())
+        ),
+        "waiting_setup_execution_wait_counts": dict(
+            sorted(waiting_setup_execution_wait_counts.items())
+        ),
         "near_setup_counts": dict(sorted(near_setup_counts.items())),
         "near_setup_failed_check_counts": dict(sorted(near_setup_failed_check_counts.items())),
+        "near_setup_hard_blocker_counts": dict(
+            sorted(near_setup_hard_blocker_counts.items())
+        ),
+        "near_setup_missing_confluence_counts": dict(
+            sorted(near_setup_missing_confluence_counts.items())
+        ),
+        "near_setup_execution_wait_counts": dict(
+            sorted(near_setup_execution_wait_counts.items())
+        ),
+        "setup_role_counts": {
+            name: dict(sorted(counter.items()))
+            for name, counter in sorted(setup_role_counts.items())
+        },
         "blocker_detail_counts": {
             name: dict(sorted(counter.items()))
             for name, counter in sorted(blocker_detail_counts.items())
@@ -625,10 +848,14 @@ class ReadOnlyStrategyObserver:
             }
 
         mtf_context = self.smc.analyze_mtf(df_htf=data["1h"], df_ltf=data["15m"])
+        htf_structure = mtf_context.get("htf_structure", {})
+        htf_structure = htf_structure if isinstance(htf_structure, dict) else {}
+        ltf_structure = mtf_context.get("ltf_structure", {})
+        ltf_structure = ltf_structure if isinstance(ltf_structure, dict) else {}
         final_structure = (
-            mtf_context.get("ltf_structure")
-            if mtf_context.get("ltf_structure", {}).get("is_confirmed")
-            else mtf_context.get("htf_structure", {})
+            ltf_structure
+            if ltf_structure.get("is_confirmed")
+            else htf_structure
         )
         final_poi = mtf_context.get("poi")
         liquidity_15m = self.liquidity.analyze(data["15m"])
@@ -656,6 +883,13 @@ class ReadOnlyStrategyObserver:
             "structure_ok": bool(final_structure.get("is_confirmed", False)),
             "poi_ok": poi_side_aligned and smc_ok,
             "smc_ok": smc_ok,
+            "mtf_aligned": bool(mtf_context.get("mtf_aligned", False)),
+            "htf_direction": htf_structure.get("direction"),
+            "ltf_direction": ltf_structure.get("direction"),
+            "htf_structure_ok": bool(htf_structure.get("structure_ok", False)),
+            "ltf_structure_ok": bool(ltf_structure.get("structure_ok", False)),
+            "htf_structure_confirmed": bool(htf_structure.get("is_confirmed", False)),
+            "ltf_structure_confirmed": bool(ltf_structure.get("is_confirmed", False)),
             "poi_side_aligned": poi_side_aligned,
             "poi_side": final_poi.get("side") if final_poi else None,
             "m5_ok": self.confirmation.check_m5_entry(data["5m"], trend),
