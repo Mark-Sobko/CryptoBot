@@ -154,6 +154,33 @@ class BybitDemoLifecycleHelperTests(unittest.TestCase):
         self.assertEqual(classify_probe_error(error), "agreement_required")
         self.assertEqual(classify_probe_error("position idx not match position mode"), "position_mode_mismatch")
 
+    def test_order_fill_state_detects_transient_partial_from_open_order(self):
+        from scripts.run_bybit_demo_lifecycle import order_fill_state
+
+        state = order_fill_state(
+            {
+                "cumExecQty": "4",
+                "leavesQty": "6",
+                "orderStatus": "PartiallyFilled",
+            },
+            [],
+        )
+
+        self.assertTrue(state["partial_observed"])
+        self.assertEqual(state["filled_qty"], Decimal("4"))
+        self.assertEqual(state["remaining_qty"], Decimal("6"))
+        self.assertEqual(state["order_status"], "PartiallyFilled")
+
+    def test_order_fill_state_uses_position_qty_after_closed_order(self):
+        from scripts.run_bybit_demo_lifecycle import order_fill_state
+
+        state = order_fill_state(None, [{"size": "10"}])
+
+        self.assertFalse(state["partial_observed"])
+        self.assertEqual(state["filled_qty"], Decimal("10"))
+        self.assertEqual(state["remaining_qty"], Decimal("0"))
+        self.assertEqual(state["order_status"], "FILLED_OR_CLOSED")
+
     def test_discovery_sweeps_to_lower_price_levels_when_deep_book_exceeds_cap(self):
         from scripts.run_bybit_demo_lifecycle import discover_partial_fill_candidates
 

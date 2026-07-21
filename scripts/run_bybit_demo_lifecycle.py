@@ -351,6 +351,58 @@ def find_order(session: HTTP, symbol: str, order_id: str) -> dict[str, Any] | No
     return None
 
 
+def order_fill_state(open_order: dict[str, Any] | None, positions: list[dict[str, Any]]) -> dict[str, Any]:
+    position_qty = decimal_from(positions[0].get("size")) if positions else Decimal("0")
+    remaining_qty = decimal_from(open_order.get("leavesQty")) if open_order else Decimal("0")
+    cumulative_qty = decimal_from(open_order.get("cumExecQty")) if open_order else Decimal("0")
+    filled_qty = max(position_qty, cumulative_qty)
+    order_status = str(open_order.get("orderStatus", "FILLED_OR_CLOSED")) if open_order else "FILLED_OR_CLOSED"
+
+    return {
+        "filled_qty": filled_qty,
+        "remaining_qty": remaining_qty,
+        "order_status": order_status,
+        "partial_observed": filled_qty > 0 and remaining_qty > 0,
+    }
+
+
+def observe_order_fill(
+    session: HTTP,
+    symbol: str,
+    order_id: str,
+    *,
+    wait_s: float,
+    poll_interval_s: float,
+) -> dict[str, Any]:
+    deadline = time.time() + max(wait_s, 0.1)
+    poll_interval_s = min(max(poll_interval_s, 0.05), 1.0)
+    polls = 0
+    last_state: dict[str, Any] = {
+        "filled_qty": Decimal("0"),
+        "remaining_qty": Decimal("0"),
+        "order_status": "UNKNOWN",
+        "partial_observed": False,
+    }
+
+    while time.time() < deadline:
+        polls += 1
+        open_order = find_order(session, symbol, order_id)
+        positions = get_positions(session, symbol)
+        last_state = order_fill_state(open_order, positions)
+        last_state["open_order"] = open_order
+        last_state["positions"] = positions
+        last_state["polls"] = polls
+
+        if last_state["partial_observed"]:
+            return last_state
+        if open_order is None and last_state["filled_qty"] > 0:
+            return last_state
+
+        time.sleep(poll_interval_s)
+
+    return last_state
+
+
 def get_ask_levels(session: HTTP, symbol: str, *, limit: int = 1) -> list[tuple[Decimal, Decimal]]:
     res = api_call(session.get_orderbook, category=CATEGORY, symbol=symbol, limit=limit)
     asks = res.get("result", {}).get("a", [])
@@ -578,6 +630,7 @@ def run_partial_fill_probe(
     candidate_plans: dict[str, dict[str, Any]] | None = None,
     prefix: str,
     wait_s: float,
+    poll_interval_s: float,
 ) -> dict[str, Any]:
     skipped: list[dict[str, Any]] = []
     attempts: list[dict[str, Any]] = []
@@ -633,13 +686,18 @@ def run_partial_fill_probe(
                 time_in_force="GTC",
             )
 
-            time.sleep(min(max(wait_s, 1.0), 3.0))
-            open_order = find_order(session, symbol, order_id)
-            positions = get_positions(session, symbol)
-            filled_qty = decimal_from(positions[0].get("size")) if positions else Decimal("0")
-            remaining_qty = decimal_from(open_order.get("leavesQty")) if open_order else Decimal("0")
-            order_status = str(open_order.get("orderStatus", "FILLED_OR_CLOSED")) if open_order else "FILLED_OR_CLOSED"
-            partial_observed = filled_qty > 0 and remaining_qty > 0
+            observed = observe_order_fill(
+                session,
+                symbol,
+                order_id,
+                wait_s=wait_s,
+                poll_interval_s=poll_interval_s,
+            )
+            open_order = observed.get("open_order")
+            filled_qty = observed["filled_qty"]
+            remaining_qty = observed["remaining_qty"]
+            order_status = observed["order_status"]
+            partial_observed = bool(observed["partial_observed"])
 
             if open_order:
                 api_call(session.cancel_order, category=CATEGORY, symbol=symbol, orderId=order_id)
@@ -665,6 +723,7 @@ def run_partial_fill_probe(
                 "remaining_qty": decimal_to_str(remaining_qty),
                 "order_status": order_status,
                 "partial_observed": partial_observed,
+                "observation_polls": observed.get("polls", 0),
                 "skipped_before": list(skipped),
             }
             attempts.append(attempt)
@@ -836,6 +895,7 @@ def main() -> int:
     parser.add_argument("--partial-fill-target-notional-pct", type=Decimal, default=Decimal("0.95"))
     parser.add_argument("--partial-fill-price-levels", type=int, default=1)
     parser.add_argument("--partial-fill-orderbook-depth", type=int, default=50)
+    parser.add_argument("--partial-fill-poll-interval", type=float, default=0.2)
     parser.add_argument("--partial-fill-probe-only", action="store_true")
     parser.add_argument("--skip-partial-close", action="store_true")
     parser.add_argument("--skip-partial-fill-probe", action="store_true")
@@ -902,6 +962,7 @@ def main() -> int:
                     candidate_plans=candidate_plans,
                     prefix=prefix,
                     wait_s=args.wait,
+                    poll_interval_s=args.partial_fill_poll_interval,
                 )
             )
 

@@ -54,7 +54,7 @@ python3 scripts/run_paper_lifecycle.py --db /tmp/cryptobot_paper_lifecycle.db --
 python3 scripts/run_paper_lifecycle.py --db /tmp/cryptobot_paper_partial_lifecycle.db --reset-db --partial-fill-recovery
 .venv/bin/python scripts/run_bybit_demo_lifecycle.py --symbol XRPUSDT --max-notional 15 --wait 20
 .venv/bin/python scripts/run_bybit_demo_lifecycle.py --partial-fill-probe-only --max-notional 15 --wait 8 --partial-fill-dynamic-candidates 10 --partial-fill-max-scan 100 --partial-fill-target-notional-pct 0.95
-.venv/bin/python scripts/run_bybit_demo_lifecycle.py --partial-fill-probe-only --max-notional 25 --wait 8 --partial-fill-dynamic-candidates 10 --partial-fill-max-scan 150 --partial-fill-target-notional-pct 0.95 --partial-fill-price-levels 5 --partial-fill-orderbook-depth 50
+.venv/bin/python scripts/run_bybit_demo_lifecycle.py --partial-fill-probe-only --max-notional 25 --wait 8 --partial-fill-dynamic-candidates 10 --partial-fill-max-scan 250 --partial-fill-target-notional-pct 0.95 --partial-fill-price-levels 5 --partial-fill-orderbook-depth 50 --partial-fill-poll-interval 0.1
 ```
 
 `run_bybit_demo_lifecycle.py` fails closed unless `BYBIT_DEMO=true` or
@@ -65,8 +65,9 @@ up its own orders/positions. The probe-only mode dynamically ranks low-notional
 USDT instruments by visible orderbook size, attempts a capped demo/testnet
 partial fill near `--max-notional * --partial-fill-target-notional-pct`, can
 cross multiple ask levels with `--partial-fill-price-levels`, sweeps down to
-shallower levels when deeper visible liquidity exceeds the cap, and exits before
-the broader lifecycle.
+shallower levels when deeper visible liquidity exceeds the cap, polls quickly
+after placement to catch transient partial-fill states, and exits before the
+broader lifecycle.
 
 CI and security checks:
 
