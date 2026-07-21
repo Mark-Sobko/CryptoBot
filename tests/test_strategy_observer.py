@@ -9,6 +9,7 @@ os.environ.setdefault("TELEGRAM_TOKEN", "")
 os.environ.setdefault("TELEGRAM_CHAT_ID", "")
 
 from scripts.run_strategy_observer import (
+    blocker_details,
     build_signal_plan,
     classify_signal_status,
     compact_cycle,
@@ -140,6 +141,54 @@ class StrategyObserverTests(unittest.TestCase):
         self.assertEqual(status, "SIGNAL")
         self.assertEqual(reason, "")
 
+    def test_blocker_details_reports_missing_poi_and_m5_metrics(self):
+        details = blocker_details(
+            {
+                "status": "REJECT",
+                "trend": "LONG",
+                "analysis": {
+                    "poi_ok": False,
+                    "m5_ok": False,
+                    "is_pd_aligned": False,
+                    "has_liquidity_target": False,
+                    "has_eql": True,
+                    "liquidity_context": "IMBALANCE_DRIVEN",
+                },
+                "confirmation_metrics": {
+                    "is_trigger": False,
+                    "body_ratio": 0.35,
+                    "vol_ratio": 2.55,
+                    "rsi_velocity": 5.07,
+                    "adx_strength": 36.18,
+                },
+            }
+        )
+
+        self.assertEqual(details["poi"]["reason"], "missing")
+        self.assertFalse(details["m5"]["is_trigger"])
+        self.assertEqual(details["liquidity_target"]["context"], "IMBALANCE_DRIVEN")
+
+    def test_blocker_details_reports_wrong_side_poi(self):
+        details = blocker_details(
+            {
+                "status": "REJECT",
+                "trend": "SHORT",
+                "poi": {"side": "LONG", "type": "OB"},
+                "analysis": {
+                    "poi_ok": False,
+                    "poi_side_aligned": False,
+                    "smc_ok": True,
+                    "m5_ok": True,
+                    "is_pd_aligned": True,
+                    "has_liquidity_target": True,
+                },
+            }
+        )
+
+        self.assertEqual(details["poi"]["reason"], "wrong_side")
+        self.assertEqual(details["poi"]["side"], "LONG")
+        self.assertEqual(details["poi"]["trend"], "SHORT")
+
     def test_summarize_cycle_reports_counts_reasons_and_near_setups(self):
         cycle = {
             "results": [
@@ -158,7 +207,9 @@ class StrategyObserverTests(unittest.TestCase):
                         "macro_ok": True,
                         "is_pd_aligned": False,
                         "has_liquidity_target": False,
+                        "liquidity_context": "IMBALANCE_DRIVEN",
                     },
+                    "confirmation_metrics": {"is_trigger": False},
                 },
                 {
                     "symbol": "LTCUSDT",
@@ -181,6 +232,10 @@ class StrategyObserverTests(unittest.TestCase):
         self.assertEqual(
             summary["near_setups"][0]["failed_checks"],
             ["poi", "m5", "pd_alignment", "liquidity_target"],
+        )
+        self.assertEqual(
+            summary["near_setups"][0]["blocker_details"]["poi"]["reason"],
+            "missing",
         )
 
     def test_summarize_cycles_reports_signal_and_near_setup_frequencies(self):

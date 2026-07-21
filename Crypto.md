@@ -77,8 +77,10 @@ demo/testnet by default, does not import the executor, does not call
 `place_order`, and emits JSON score/signal observations only. Use
 `--summary-only` for longer read-only soaks; it keeps status/reason/near-setup
 counts, signal route counts, failed checks, and repeated-symbol frequencies
-without printing every per-symbol analysis packet. Signal outputs include a
-read-only plan with reference entry/SL/TP/R:R and planned limit/market entry,
+without printing every per-symbol analysis packet. Compact setup summaries
+include blocker details for POI, M5 trigger, P/D alignment, and liquidity
+target checks. Signal outputs include a read-only plan with reference
+entry/SL/TP/R:R and planned limit/market entry,
 plus protective stop/R:R after the minimum stop-distance guard, but no quantity
 and no exchange order placement. High-score setups that still lack M5
 confirmation are reported as `WAIT_CONFIRMATION`, not execution-ready

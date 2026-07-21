@@ -213,6 +213,67 @@ def failed_checks(result: dict[str, Any]) -> list[str]:
     ]
 
 
+def poi_blocker_reason(result: dict[str, Any], analysis: dict[str, Any]) -> str:
+    poi = result.get("poi")
+    if not poi:
+        return "missing"
+
+    poi_side = str(poi.get("side", "")).upper()
+    trend = str(result.get("trend") or analysis.get("trend", "")).upper()
+    if poi_side and trend and poi_side != trend:
+        return "wrong_side"
+
+    if "smc_ok" in analysis and not bool(analysis.get("smc_ok")):
+        return "smc_not_ok"
+
+    return "not_confirmed"
+
+
+def blocker_details(result: dict[str, Any]) -> dict[str, Any]:
+    analysis = result.get("analysis")
+    if not isinstance(analysis, dict):
+        return {}
+
+    failed = set(failed_checks(result))
+    details: dict[str, Any] = {}
+
+    if "poi" in failed:
+        poi = result.get("poi") if isinstance(result.get("poi"), dict) else {}
+        details["poi"] = {
+            "reason": poi_blocker_reason(result, analysis),
+            "side": poi.get("side"),
+            "type": poi.get("type"),
+            "trend": result.get("trend") or analysis.get("trend"),
+            "side_aligned": bool(analysis.get("poi_side_aligned", False)),
+            "smc_ok": bool(analysis.get("smc_ok", False)),
+        }
+
+    if "m5" in failed:
+        metrics = result.get("confirmation_metrics")
+        metrics = metrics if isinstance(metrics, dict) else {}
+        details["m5"] = {
+            "is_trigger": bool(metrics.get("is_trigger", False)),
+            "body_ratio": metrics.get("body_ratio"),
+            "vol_ratio": metrics.get("vol_ratio"),
+            "rsi_velocity": metrics.get("rsi_velocity"),
+            "adx_strength": metrics.get("adx_strength"),
+        }
+
+    if "pd_alignment" in failed:
+        details["pd_alignment"] = {"aligned": bool(analysis.get("is_pd_aligned", False))}
+
+    if "liquidity_target" in failed:
+        details["liquidity_target"] = {
+            "has_target": bool(analysis.get("has_liquidity_target", False)),
+            "has_eqh": bool(analysis.get("has_eqh", False)),
+            "has_eql": bool(analysis.get("has_eql", False)),
+            "has_ql": bool(analysis.get("has_ql", False)),
+            "context": analysis.get("liquidity_context"),
+        }
+
+    return details
+
+
 def execution_wait_checks(analysis: dict[str, Any]) -> list[str]:
     checks = (("m5", "m5_ok"),)
     return [
@@ -252,6 +313,9 @@ def compact_setup(result: dict[str, Any]) -> dict[str, Any]:
     failed = failed_checks(result)
     if failed:
         compact["failed_checks"] = failed
+    details = blocker_details(result)
+    if details:
+        compact["blocker_details"] = details
     plan = result.get("signal_plan")
     if isinstance(plan, dict):
         compact["signal_plan"] = {
@@ -495,13 +559,17 @@ class ReadOnlyStrategyObserver:
         liquidity_context = self.liquidity.evaluate_liquidity_context(liquidity_15m)
         macro_ok = MarketFilters.check_macro(macro, trend)
         poi_side_aligned = bool(final_poi and final_poi.get("side") == trend)
+        smc_ok = bool(mtf_context.get("smc_ok", False))
 
         analysis = {
             "trend": trend,
             "direction": trend,
             "trend_ok": True,
             "structure_ok": bool(final_structure.get("is_confirmed", False)),
-            "poi_ok": poi_side_aligned and bool(mtf_context.get("smc_ok", False)),
+            "poi_ok": poi_side_aligned and smc_ok,
+            "smc_ok": smc_ok,
+            "poi_side_aligned": poi_side_aligned,
+            "poi_side": final_poi.get("side") if final_poi else None,
             "m5_ok": self.confirmation.check_m5_entry(data["5m"], trend),
             "macro_ok": macro_ok,
             "liquidity_sweep": bool(sweep_5m.get("is_confirmed", False)),
