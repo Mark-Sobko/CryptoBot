@@ -15,6 +15,7 @@ from scripts.run_strategy_observer import (
     compact_cycle,
     compact_setup,
     count_blocker_details,
+    effective_liquidity_target,
     news_score_bonus,
     parse_symbols,
     protective_stop_loss,
@@ -56,6 +57,35 @@ class StrategyObserverTests(unittest.TestCase):
         self.assertEqual(news_score_bonus("SHORT", "LONG"), -20)
         self.assertEqual(news_score_bonus("NONE", "LONG"), 0)
         self.assertEqual(news_score_bonus("BLOCK", "LONG"), -100)
+
+    def test_effective_liquidity_target_matches_scoring_fallback(self):
+        self.assertTrue(
+            effective_liquidity_target(
+                trend="LONG",
+                has_liquidity_target=False,
+                has_eqh=True,
+                has_eql=False,
+                has_ql=False,
+            )
+        )
+        self.assertTrue(
+            effective_liquidity_target(
+                trend="SHORT",
+                has_liquidity_target=False,
+                has_eqh=False,
+                has_eql=False,
+                has_ql=True,
+            )
+        )
+        self.assertFalse(
+            effective_liquidity_target(
+                trend="LONG",
+                has_liquidity_target=False,
+                has_eqh=False,
+                has_eql=True,
+                has_ql=True,
+            )
+        )
 
     def test_validate_market_data_accepts_required_timeframes(self):
         frame = pd.DataFrame(

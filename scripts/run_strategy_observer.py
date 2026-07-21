@@ -102,6 +102,25 @@ def news_score_bonus(news_action: str, trend: str) -> int:
     return 0
 
 
+def effective_liquidity_target(
+    *,
+    trend: str,
+    has_liquidity_target: bool,
+    has_eqh: bool,
+    has_eql: bool,
+    has_ql: bool,
+) -> bool:
+    if has_liquidity_target:
+        return True
+
+    direction = str(trend).upper()
+    if direction == "LONG":
+        return has_eqh
+    if direction == "SHORT":
+        return has_eql or has_ql
+    return False
+
+
 def safe_float(value: Any, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -618,6 +637,17 @@ class ReadOnlyStrategyObserver:
         macro_ok = MarketFilters.check_macro(macro, trend)
         poi_side_aligned = bool(final_poi and final_poi.get("side") == trend)
         smc_ok = bool(mtf_context.get("smc_ok", False))
+        raw_liquidity_target = bool(mtf_context.get("has_liquidity_target", False))
+        has_eqh = bool(liquidity_15m.get("has_eqh", False))
+        has_eql = bool(liquidity_15m.get("has_eql", False))
+        has_ql = bool(liquidity_15m.get("has_ql", False))
+        has_liquidity_target = effective_liquidity_target(
+            trend=trend,
+            has_liquidity_target=raw_liquidity_target,
+            has_eqh=has_eqh,
+            has_eql=has_eql,
+            has_ql=has_ql,
+        )
 
         analysis = {
             "trend": trend,
@@ -633,10 +663,11 @@ class ReadOnlyStrategyObserver:
             "liquidity_sweep": bool(sweep_5m.get("is_confirmed", False)),
             "sweep_active": bool(sweep_5m.get("is_confirmed", False)),
             "is_pd_aligned": bool(mtf_context.get("is_pd_aligned", False)),
-            "has_liquidity_target": bool(mtf_context.get("has_liquidity_target", False)),
-            "has_eqh": bool(liquidity_15m.get("has_eqh", False)),
-            "has_eql": bool(liquidity_15m.get("has_eql", False)),
-            "has_ql": bool(liquidity_15m.get("has_ql", False)),
+            "has_liquidity_target": has_liquidity_target,
+            "raw_has_liquidity_target": raw_liquidity_target,
+            "has_eqh": has_eqh,
+            "has_eql": has_eql,
+            "has_ql": has_ql,
             "high_volatility": False,
             "news_action": news.get("action", "NONE"),
             "liquidity_context": liquidity_context,
