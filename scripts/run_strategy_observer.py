@@ -304,6 +304,25 @@ def smc_blocker_reason(analysis: dict[str, Any]) -> str:
     return "not_confirmed"
 
 
+def structure_diagnostics(prefix: str, analysis: dict[str, Any]) -> dict[str, Any]:
+    displacement = analysis.get(f"{prefix}_displacement")
+    displacement = displacement if isinstance(displacement, dict) else {}
+    return {
+        "type": analysis.get(f"{prefix}_structure_type"),
+        "direction": analysis.get(f"{prefix}_direction"),
+        "confirmed": bool(analysis.get(f"{prefix}_structure_confirmed", False)),
+        "structure_ok": bool(analysis.get(f"{prefix}_structure_ok", False)),
+        "reason": analysis.get(f"{prefix}_structure_reason"),
+        "market_phase": analysis.get(f"{prefix}_market_phase"),
+        "displacement_valid": bool(displacement.get("valid", False)),
+        "displacement_strength": displacement.get("strength"),
+        "volume_confirmed": bool(displacement.get("volume_confirmed", False)),
+        "swing_highs_count": analysis.get(f"{prefix}_swing_highs_count"),
+        "swing_lows_count": analysis.get(f"{prefix}_swing_lows_count"),
+        "scan_depth": analysis.get(f"{prefix}_scan_depth"),
+    }
+
+
 def poi_blocker_reason(result: dict[str, Any], analysis: dict[str, Any]) -> str:
     poi = result.get("poi")
     if not poi:
@@ -338,6 +357,10 @@ def blocker_details(result: dict[str, Any]) -> dict[str, Any]:
             "ltf_structure_ok": bool(analysis.get("ltf_structure_ok", False)),
             "htf_direction": analysis.get("htf_direction"),
             "ltf_direction": analysis.get("ltf_direction"),
+            "htf_structure_reason": analysis.get("htf_structure_reason"),
+            "ltf_structure_reason": analysis.get("ltf_structure_reason"),
+            "htf_structure": structure_diagnostics("htf", analysis),
+            "ltf_structure": structure_diagnostics("ltf", analysis),
         }
 
     if "poi" in failed:
@@ -355,6 +378,8 @@ def blocker_details(result: dict[str, Any]) -> dict[str, Any]:
             "ltf_direction": analysis.get("ltf_direction"),
             "htf_structure_ok": bool(analysis.get("htf_structure_ok", False)),
             "ltf_structure_ok": bool(analysis.get("ltf_structure_ok", False)),
+            "htf_structure": structure_diagnostics("htf", analysis),
+            "ltf_structure": structure_diagnostics("ltf", analysis),
         }
 
     if "m5" in failed:
@@ -495,6 +520,14 @@ def count_blocker_details(setups: list[dict[str, Any]]) -> dict[str, dict[str, i
         "ltf_direction_counts": Counter(),
         "htf_structure_ok_counts": Counter(),
         "ltf_structure_ok_counts": Counter(),
+        "htf_structure_reason_counts": Counter(),
+        "ltf_structure_reason_counts": Counter(),
+        "htf_structure_type_counts": Counter(),
+        "ltf_structure_type_counts": Counter(),
+        "htf_market_phase_counts": Counter(),
+        "ltf_market_phase_counts": Counter(),
+        "htf_displacement_valid_counts": Counter(),
+        "ltf_displacement_valid_counts": Counter(),
         "poi_side_alignment_counts": Counter(),
         "m5_trigger_counts": Counter(),
         "pd_alignment_counts": Counter(),
@@ -535,6 +568,34 @@ def count_blocker_details(setups: list[dict[str, Any]]) -> dict[str, dict[str, i
             if "ltf_structure_ok" in poi:
                 counts["ltf_structure_ok_counts"].update(
                     [str(bool(poi.get("ltf_structure_ok", False))).lower()]
+                )
+            htf_structure = poi.get("htf_structure")
+            if isinstance(htf_structure, dict):
+                counts["htf_structure_reason_counts"].update(
+                    [str(htf_structure.get("reason") or "unknown")]
+                )
+                counts["htf_structure_type_counts"].update(
+                    [str(htf_structure.get("type") or "missing")]
+                )
+                counts["htf_market_phase_counts"].update(
+                    [str(htf_structure.get("market_phase") or "unknown")]
+                )
+                counts["htf_displacement_valid_counts"].update(
+                    [str(bool(htf_structure.get("displacement_valid", False))).lower()]
+                )
+            ltf_structure = poi.get("ltf_structure")
+            if isinstance(ltf_structure, dict):
+                counts["ltf_structure_reason_counts"].update(
+                    [str(ltf_structure.get("reason") or "unknown")]
+                )
+                counts["ltf_structure_type_counts"].update(
+                    [str(ltf_structure.get("type") or "missing")]
+                )
+                counts["ltf_market_phase_counts"].update(
+                    [str(ltf_structure.get("market_phase") or "unknown")]
+                )
+                counts["ltf_displacement_valid_counts"].update(
+                    [str(bool(ltf_structure.get("displacement_valid", False))).lower()]
                 )
             if "side_aligned" in poi:
                 counts["poi_side_alignment_counts"].update(
@@ -924,6 +985,20 @@ class ReadOnlyStrategyObserver:
             "ltf_structure_ok": bool(ltf_structure.get("structure_ok", False)),
             "htf_structure_confirmed": bool(htf_structure.get("is_confirmed", False)),
             "ltf_structure_confirmed": bool(ltf_structure.get("is_confirmed", False)),
+            "htf_structure_type": htf_structure.get("type"),
+            "ltf_structure_type": ltf_structure.get("type"),
+            "htf_structure_reason": htf_structure.get("reason"),
+            "ltf_structure_reason": ltf_structure.get("reason"),
+            "htf_market_phase": htf_structure.get("market_phase"),
+            "ltf_market_phase": ltf_structure.get("market_phase"),
+            "htf_displacement": htf_structure.get("displacement"),
+            "ltf_displacement": ltf_structure.get("displacement"),
+            "htf_swing_highs_count": htf_structure.get("swing_highs_count"),
+            "ltf_swing_highs_count": ltf_structure.get("swing_highs_count"),
+            "htf_swing_lows_count": htf_structure.get("swing_lows_count"),
+            "ltf_swing_lows_count": ltf_structure.get("swing_lows_count"),
+            "htf_scan_depth": htf_structure.get("scan_depth"),
+            "ltf_scan_depth": ltf_structure.get("scan_depth"),
             "poi_side_aligned": poi_side_aligned,
             "poi_side": final_poi.get("side") if final_poi else None,
             "m5_ok": self.confirmation.check_m5_entry(data["5m"], trend),

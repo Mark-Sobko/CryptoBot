@@ -25,11 +25,13 @@ from scripts.run_strategy_observer import (
     protective_stop_loss,
     risk_reward_ratio,
     smc_blocker_reason,
+    structure_diagnostics,
     summarize_cycle,
     summarize_cycles,
     validate_market_data,
     validate_read_only_environment,
 )
+from engine.smc.structure_engine import StructureEngine
 
 
 class StrategyObserverTests(unittest.TestCase):
@@ -273,6 +275,60 @@ class StrategyObserverTests(unittest.TestCase):
             "htf_structure_not_ok",
         )
 
+    def test_structure_engine_reports_non_signal_reasons(self):
+        engine = StructureEngine()
+        short_frame = pd.DataFrame(
+            {
+                "open": [1.0] * 10,
+                "high": [1.1] * 10,
+                "low": [0.9] * 10,
+                "close": [1.0] * 10,
+                "volume": [10.0] * 10,
+            }
+        )
+        flat_frame = pd.DataFrame(
+            {
+                "open": [1.0] * 100,
+                "high": [1.0] * 100,
+                "low": [1.0] * 100,
+                "close": [1.0] * 100,
+                "volume": [10.0] * 100,
+            }
+        )
+
+        self.assertEqual(engine.detect_structure(short_frame)["reason"], "invalid_ohlcv")
+        flat_result = engine.detect_structure(flat_frame)
+        self.assertEqual(flat_result["reason"], "no_swings")
+        self.assertEqual(flat_result["swing_highs_count"], 0)
+        self.assertEqual(flat_result["swing_lows_count"], 0)
+
+    def test_structure_diagnostics_compacts_prefixed_analysis(self):
+        compact = structure_diagnostics(
+            "htf",
+            {
+                "htf_structure_type": "BOS",
+                "htf_direction": "LONG",
+                "htf_structure_confirmed": True,
+                "htf_structure_ok": False,
+                "htf_structure_reason": "displacement_not_valid",
+                "htf_market_phase": "BULLISH",
+                "htf_displacement": {
+                    "valid": False,
+                    "strength": 0.72,
+                    "volume_confirmed": True,
+                },
+                "htf_swing_highs_count": 5,
+                "htf_swing_lows_count": 4,
+                "htf_scan_depth": 12,
+            },
+        )
+
+        self.assertEqual(compact["type"], "BOS")
+        self.assertEqual(compact["reason"], "displacement_not_valid")
+        self.assertFalse(compact["displacement_valid"])
+        self.assertEqual(compact["displacement_strength"], 0.72)
+        self.assertTrue(compact["volume_confirmed"])
+
     def test_blocker_details_reports_missing_poi_and_m5_metrics(self):
         details = blocker_details(
             {
@@ -350,6 +406,18 @@ class StrategyObserverTests(unittest.TestCase):
                             "ltf_direction": "SHORT",
                             "htf_structure_ok": False,
                             "ltf_structure_ok": True,
+                            "htf_structure": {
+                                "reason": "no_break_or_sweep",
+                                "type": None,
+                                "market_phase": "FLAT",
+                                "displacement_valid": False,
+                            },
+                            "ltf_structure": {
+                                "reason": "sweep_confirmed",
+                                "type": "SWEEP",
+                                "market_phase": "BEARISH",
+                                "displacement_valid": False,
+                            },
                             "side_aligned": True,
                         },
                         "pd_alignment": {"aligned": False},
@@ -373,6 +441,14 @@ class StrategyObserverTests(unittest.TestCase):
         self.assertEqual(counts["ltf_direction_counts"], {"SHORT": 1})
         self.assertEqual(counts["htf_structure_ok_counts"], {"false": 1})
         self.assertEqual(counts["ltf_structure_ok_counts"], {"true": 1})
+        self.assertEqual(counts["htf_structure_reason_counts"], {"no_break_or_sweep": 1})
+        self.assertEqual(counts["ltf_structure_reason_counts"], {"sweep_confirmed": 1})
+        self.assertEqual(counts["htf_structure_type_counts"], {"missing": 1})
+        self.assertEqual(counts["ltf_structure_type_counts"], {"SWEEP": 1})
+        self.assertEqual(counts["htf_market_phase_counts"], {"FLAT": 1})
+        self.assertEqual(counts["ltf_market_phase_counts"], {"BEARISH": 1})
+        self.assertEqual(counts["htf_displacement_valid_counts"], {"false": 1})
+        self.assertEqual(counts["ltf_displacement_valid_counts"], {"false": 1})
         self.assertEqual(counts["poi_side_alignment_counts"], {"true": 1})
         self.assertEqual(counts["m5_trigger_counts"], {"false": 1})
         self.assertEqual(counts["pd_alignment_counts"], {"false": 2})

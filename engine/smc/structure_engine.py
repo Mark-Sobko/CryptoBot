@@ -165,6 +165,10 @@ class StructureEngine:
             "strength": 1.0,
             "structure_ok": False,
             "trend_ok": True,
+            "reason": "not_evaluated",
+            "swing_highs_count": 0,
+            "swing_lows_count": 0,
+            "scan_depth": 0,
             "is_choch": False, # [INSTITUTIONAL SCALING]
             "market_phase": "FLAT", # [INSTITUTIONAL SCALING]
             "displacement": {
@@ -175,14 +179,18 @@ class StructureEngine:
         }
 
         if not validate_ohlcv(df, 80):
+            res["reason"] = "invalid_ohlcv"
             return res
 
         try:
             df = df.dropna(subset=["open", "high", "low", "close"]).reset_index(drop=True)
 
             swing_highs, swing_lows = self._find_swings(df)
+            res["swing_highs_count"] = len(swing_highs)
+            res["swing_lows_count"] = len(swing_lows)
 
             if not swing_highs or not swing_lows:
+                res["reason"] = "no_swings"
                 return res
 
             highs = df["high"].astype(float).values
@@ -190,6 +198,8 @@ class StructureEngine:
             closes = df["close"].astype(float).values
 
             scan_depth = min(12, len(df) - 3)
+            res["scan_depth"] = scan_depth
+            found_major_levels = False
 
             for offset in range(1, scan_depth + 1):
                 idx = len(df) - offset
@@ -204,6 +214,7 @@ class StructureEngine:
                 if major_high is None or major_low is None:
                     continue
 
+                found_major_levels = True
                 candle_high = highs[idx]
                 candle_low = lows[idx]
                 candle_close = closes[idx]
@@ -227,6 +238,11 @@ class StructureEngine:
                                 "level": float(major_high),
                                 "is_confirmed": True,
                                 "structure_ok": displacement["valid"],
+                                "reason": (
+                                    "structure_confirmed"
+                                    if displacement["valid"]
+                                    else "displacement_not_valid"
+                                ),
                                 "strength": displacement["strength"],
                                 "is_choch": is_choch,
                                 "displacement": displacement,
@@ -240,6 +256,7 @@ class StructureEngine:
                                 "level": float(major_high),
                                 "is_confirmed": True,
                                 "structure_ok": True, # Sweep является самодостаточным паттерном
+                                "reason": "sweep_confirmed",
                                 "strength": 1.0,
                             }
                         )
@@ -260,6 +277,11 @@ class StructureEngine:
                                 "level": float(major_low),
                                 "is_confirmed": True,
                                 "structure_ok": displacement["valid"],
+                                "reason": (
+                                    "structure_confirmed"
+                                    if displacement["valid"]
+                                    else "displacement_not_valid"
+                                ),
                                 "strength": displacement["strength"],
                                 "is_choch": is_choch,
                                 "displacement": displacement,
@@ -273,13 +295,18 @@ class StructureEngine:
                                 "level": float(major_low),
                                 "is_confirmed": True,
                                 "structure_ok": True,
+                                "reason": "sweep_confirmed",
                                 "strength": 1.0,
                             }
                         )
                     return res
 
+            res["reason"] = (
+                "no_break_or_sweep" if found_major_levels else "no_recent_major_levels"
+            )
             return res
 
         except Exception as e:
             self.logger.error(f"Structure detection failed: {e}", exc_info=True)
+            res["reason"] = "exception"
             return res
