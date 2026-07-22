@@ -24,6 +24,7 @@ from scripts.run_strategy_observer import (
     parse_symbols,
     protective_stop_loss,
     risk_reward_ratio,
+    setup_state,
     smc_blocker_reason,
     structure_diagnostics,
     summarize_cycle,
@@ -233,6 +234,62 @@ class StrategyObserverTests(unittest.TestCase):
         }
 
         self.assertEqual(hard_blockers(result), [])
+
+    def test_setup_state_prioritizes_structure_waits(self):
+        self.assertEqual(
+            setup_state(
+                {
+                    "status": "REJECT",
+                    "trend": "LONG",
+                    "analysis": {
+                        "direction": "LONG",
+                        "htf_direction": None,
+                        "htf_structure_ok": False,
+                        "ltf_direction": "LONG",
+                        "ltf_structure_ok": True,
+                        "poi_ok": False,
+                        "m5_ok": False,
+                        "is_pd_aligned": False,
+                    },
+                }
+            ),
+            "WAIT_HTF_STRUCTURE",
+        )
+        self.assertEqual(
+            setup_state(
+                {
+                    "status": "REJECT",
+                    "trend": "SHORT",
+                    "analysis": {
+                        "direction": "SHORT",
+                        "htf_direction": "SHORT",
+                        "htf_structure_ok": True,
+                        "ltf_direction": None,
+                        "ltf_structure_ok": False,
+                        "poi_ok": False,
+                    },
+                }
+            ),
+            "WAIT_LTF_STRUCTURE",
+        )
+        self.assertEqual(
+            setup_state(
+                {
+                    "status": "REJECT",
+                    "trend": "SHORT",
+                    "analysis": {
+                        "direction": "SHORT",
+                        "htf_direction": "SHORT",
+                        "htf_structure_ok": True,
+                        "ltf_direction": "SHORT",
+                        "ltf_structure_ok": True,
+                        "poi_ok": False,
+                        "poi_side_aligned": False,
+                    },
+                }
+            ),
+            "WAIT_POI_SIDE",
+        )
 
     def test_smc_blocker_reason_reports_mtf_cause(self):
         self.assertEqual(
@@ -576,11 +633,16 @@ class StrategyObserverTests(unittest.TestCase):
 
         self.assertEqual(summary["status_counts"], {"FLAT": 1, "REJECT": 2})
         self.assertEqual(
+            summary["setup_state_counts"],
+            {"FLAT": 1, "MARKET_FILTER": 1, "WAIT_POI": 1},
+        )
+        self.assertEqual(
             summary["reject_reasons"],
             {"market_filter": 1, "score_below_threshold:0/55": 1},
         )
         self.assertEqual(len(summary["near_setups"]), 1)
         self.assertEqual(summary["near_setups"][0]["symbol"], "ETHUSDT")
+        self.assertEqual(summary["near_setups"][0]["setup_state"], "WAIT_POI")
         self.assertEqual(
             summary["near_setups"][0]["failed_checks"],
             ["poi", "m5", "pd_alignment", "liquidity_target"],
@@ -680,6 +742,10 @@ class StrategyObserverTests(unittest.TestCase):
         self.assertEqual(
             summary["status_counts"],
             {"REJECT": 2, "SIGNAL": 1, "WAIT_CONFIRMATION": 1},
+        )
+        self.assertEqual(
+            summary["setup_state_counts"],
+            {"SIGNAL_READY": 1, "WAIT_CONFIRMATION": 1, "WAIT_POI": 2},
         )
         self.assertEqual(summary["signals_total"], 1)
         self.assertEqual(summary["waiting_setups_total"], 1)

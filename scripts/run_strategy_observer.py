@@ -286,6 +286,61 @@ def failed_checks(result: dict[str, Any]) -> list[str]:
     return checks
 
 
+def setup_state(result: dict[str, Any]) -> str:
+    status = str(result.get("status", "UNKNOWN")).upper()
+    if status == "SIGNAL":
+        return "SIGNAL_READY"
+    if status == "WAIT_CONFIRMATION":
+        return "WAIT_CONFIRMATION"
+    if status in ("FLAT", "ERROR"):
+        return status
+
+    analysis = _analysis_from_result(result)
+    if not analysis:
+        reason = str(result.get("reason", "")).lower()
+        if reason == "market_filter":
+            return "MARKET_FILTER"
+        if reason.startswith(("missing_", "not_enough_bars", "invalid_")):
+            return "DATA_UNAVAILABLE"
+        return status
+
+    direction = str(analysis.get("direction") or result.get("trend", "")).upper()
+    if direction not in ("LONG", "SHORT"):
+        return "WAIT_DIRECTION"
+
+    if str(analysis.get("news_action", "NONE")).upper() == "BLOCK":
+        return "NEWS_BLOCK"
+
+    if "htf_direction" in analysis and not analysis.get("htf_direction"):
+        return "WAIT_HTF_STRUCTURE"
+    if "htf_structure_ok" in analysis and not bool(analysis.get("htf_structure_ok")):
+        return "WAIT_HTF_STRUCTURE"
+    if "ltf_direction" in analysis and not analysis.get("ltf_direction"):
+        return "WAIT_LTF_STRUCTURE"
+    if "ltf_structure_ok" in analysis and not bool(analysis.get("ltf_structure_ok")):
+        return "WAIT_LTF_STRUCTURE"
+
+    if "poi_ok" in analysis and not bool(analysis.get("poi_ok")):
+        if "poi_side_aligned" in analysis and not bool(analysis.get("poi_side_aligned")):
+            return "WAIT_POI_SIDE"
+        return "WAIT_POI"
+
+    if "m5_ok" in analysis and not bool(analysis.get("m5_ok")):
+        return "WAIT_M5"
+    if "macro_ok" in analysis and not bool(analysis.get("macro_ok")):
+        return "WAIT_MACRO"
+    if "is_pd_aligned" in analysis and not bool(analysis.get("is_pd_aligned")):
+        return "WAIT_PD_ALIGNMENT"
+    if "has_liquidity_target" in analysis and not bool(
+        analysis.get("has_liquidity_target")
+    ):
+        return "WAIT_LIQUIDITY_TARGET"
+
+    if status == "REJECT":
+        return "REJECT_LOW_SCORE"
+    return status
+
+
 def smc_blocker_reason(analysis: dict[str, Any]) -> str:
     if bool(analysis.get("smc_ok", False)):
         return "ok"
@@ -448,6 +503,7 @@ def compact_setup(result: dict[str, Any]) -> dict[str, Any]:
     compact = {
         "symbol": result.get("symbol", ""),
         "status": result.get("status", ""),
+        "setup_state": result.get("setup_state") or setup_state(result),
         "trend": result.get("trend", ""),
         "reason": result.get("reason", ""),
         "score": result.get("score"),
@@ -670,6 +726,9 @@ def summarize_cycle(cycle: dict[str, Any]) -> dict[str, Any]:
     trend_counts = Counter(
         str(item.get("trend", "UNKNOWN")) for item in results if isinstance(item, dict)
     )
+    setup_state_counts = Counter(
+        setup_state(item) for item in results if isinstance(item, dict)
+    )
     reject_reasons = Counter(
         str(item.get("reason", "unspecified"))
         for item in results
@@ -701,6 +760,7 @@ def summarize_cycle(cycle: dict[str, Any]) -> dict[str, Any]:
     return {
         "status_counts": dict(sorted(status_counts.items())),
         "trend_counts": dict(sorted(trend_counts.items())),
+        "setup_state_counts": dict(sorted(setup_state_counts.items())),
         "reject_reasons": dict(sorted(reject_reasons.items())),
         "signals": signals,
         "waiting_setups": waiting_setups,
@@ -716,6 +776,7 @@ def summarize_cycle(cycle: dict[str, Any]) -> dict[str, Any]:
 def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
     status_counts: Counter[str] = Counter()
     trend_counts: Counter[str] = Counter()
+    setup_state_counts: Counter[str] = Counter()
     reject_reasons: Counter[str] = Counter()
     signals: list[dict[str, Any]] = []
     waiting_setups: list[dict[str, Any]] = []
@@ -747,6 +808,7 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
         summary = summarize_cycle(cycle)
         status_counts.update(summary["status_counts"])
         trend_counts.update(summary["trend_counts"])
+        setup_state_counts.update(summary["setup_state_counts"])
         reject_reasons.update(summary["reject_reasons"])
         signals.extend(summary["signals"])
         waiting_setups.extend(summary["waiting_setups"])
@@ -822,6 +884,7 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "status_counts": dict(sorted(status_counts.items())),
         "trend_counts": dict(sorted(trend_counts.items())),
+        "setup_state_counts": dict(sorted(setup_state_counts.items())),
         "reject_reasons": dict(sorted(reject_reasons.items())),
         "signals_total": len(signals),
         "waiting_setups_total": len(waiting_setups),
