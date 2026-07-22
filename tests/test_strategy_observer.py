@@ -31,6 +31,7 @@ from scripts.run_strategy_observer import (
     validate_market_data,
     validate_read_only_environment,
 )
+from engine.smc_analyzer import SMCAnalyzer
 from engine.smc.structure_engine import StructureEngine
 
 
@@ -274,6 +275,71 @@ class StrategyObserverTests(unittest.TestCase):
             ),
             "htf_structure_not_ok",
         )
+        self.assertEqual(
+            smc_blocker_reason(
+                {
+                    "smc_ok": False,
+                    "mtf_aligned": False,
+                    "mtf_direction_aligned": True,
+                    "htf_direction": "LONG",
+                    "ltf_direction": "LONG",
+                    "htf_structure_ok": True,
+                    "ltf_structure_ok": False,
+                }
+            ),
+            "ltf_structure_not_ok",
+        )
+        self.assertEqual(
+            smc_blocker_reason(
+                {
+                    "smc_ok": False,
+                    "mtf_aligned": False,
+                    "mtf_direction_aligned": False,
+                    "htf_direction": "LONG",
+                    "ltf_direction": "SHORT",
+                    "htf_structure_ok": True,
+                    "ltf_structure_ok": True,
+                    "poi_side_aligned": True,
+                }
+            ),
+            "mtf_direction_mismatch",
+        )
+
+    def test_smc_analyzer_requires_valid_ltf_structure_for_mtf_alignment(self):
+        analyzer = SMCAnalyzer()
+        htf_frame = object()
+        ltf_frame = object()
+        htf_structure = {
+            "direction": "LONG",
+            "structure_ok": True,
+            "is_confirmed": True,
+        }
+        ltf_structure = {
+            "direction": "LONG",
+            "structure_ok": False,
+            "is_confirmed": True,
+        }
+
+        def detect_structure(frame):
+            return htf_structure if frame is htf_frame else ltf_structure
+
+        analyzer.detect_structure = detect_structure
+        analyzer.find_poi = lambda _df: {"side": "LONG", "mid": 0.9}
+        analyzer.get_pd_zones = lambda _df: {"equilibrium": 1.0}
+        analyzer.detect_liquidity_pools = lambda _df: {"has_eqh": True, "has_eql": False}
+
+        result = analyzer.analyze_mtf(htf_frame, ltf_frame)
+
+        self.assertTrue(result["mtf_direction_aligned"])
+        self.assertFalse(result["mtf_aligned"])
+        self.assertFalse(result["smc_ok"])
+
+        ltf_structure["structure_ok"] = True
+        result = analyzer.analyze_mtf(htf_frame, ltf_frame)
+
+        self.assertTrue(result["mtf_direction_aligned"])
+        self.assertTrue(result["mtf_aligned"])
+        self.assertTrue(result["smc_ok"])
 
     def test_structure_engine_reports_non_signal_reasons(self):
         engine = StructureEngine()

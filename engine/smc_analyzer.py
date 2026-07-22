@@ -106,12 +106,17 @@ class SMCAnalyzer:
         htf_dir = htf_structure.get("direction")
         ltf_dir = ltf_structure.get("direction")
         
-        # Сильный сигнал - когда структура старшего ТФ и младшего ТФ синхронизированы
-        mtf_aligned = bool(htf_dir and ltf_dir and htf_dir == ltf_dir)
+        # Сильный сигнал требует не только совпадения направления, но и
+        # валидной структуры на обоих таймфреймах.
+        mtf_direction_aligned = bool(htf_dir and ltf_dir and htf_dir == ltf_dir)
+        mtf_aligned = bool(
+            mtf_direction_aligned
+            and htf_structure.get("structure_ok")
+            and ltf_structure.get("structure_ok")
+        )
 
         smc_ok = bool(
             mtf_aligned
-            and htf_structure.get("structure_ok")
             and ltf_poi
             and htf_dir == ltf_poi.get("side")
         )
@@ -139,6 +144,7 @@ class SMCAnalyzer:
             "poi": ltf_poi,
             "pd_zones": htf_pd_zones,
             "liquidity": ltf_liquidity,
+            "mtf_direction_aligned": mtf_direction_aligned,
             "mtf_aligned": mtf_aligned,
             "smc_ok": smc_ok,
             "direction": htf_dir,

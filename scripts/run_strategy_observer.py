@@ -295,12 +295,14 @@ def smc_blocker_reason(analysis: dict[str, Any]) -> str:
         return "ltf_direction_missing"
     if "htf_structure_ok" in analysis and not bool(analysis.get("htf_structure_ok")):
         return "htf_structure_not_ok"
-    if "poi_side_aligned" in analysis and not bool(analysis.get("poi_side_aligned")):
-        return "poi_side_mismatch"
-    if "mtf_aligned" in analysis and not bool(analysis.get("mtf_aligned")):
-        return "mtf_not_aligned"
     if "ltf_structure_ok" in analysis and not bool(analysis.get("ltf_structure_ok")):
         return "ltf_structure_not_ok"
+    if "poi_side_aligned" in analysis and not bool(analysis.get("poi_side_aligned")):
+        return "poi_side_mismatch"
+    if "mtf_direction_aligned" in analysis and not bool(analysis.get("mtf_direction_aligned")):
+        return "mtf_direction_mismatch"
+    if "mtf_aligned" in analysis and not bool(analysis.get("mtf_aligned")):
+        return "mtf_not_aligned"
     return "not_confirmed"
 
 
@@ -373,6 +375,9 @@ def blocker_details(result: dict[str, Any]) -> dict[str, Any]:
             "side_aligned": bool(analysis.get("poi_side_aligned", False)),
             "smc_ok": bool(analysis.get("smc_ok", False)),
             "smc_reason": smc_blocker_reason(analysis),
+            "mtf_direction_aligned": bool(
+                analysis.get("mtf_direction_aligned", False)
+            ),
             "mtf_aligned": bool(analysis.get("mtf_aligned", False)),
             "htf_direction": analysis.get("htf_direction"),
             "ltf_direction": analysis.get("ltf_direction"),
@@ -516,6 +521,7 @@ def count_blocker_details(setups: list[dict[str, Any]]) -> dict[str, dict[str, i
         "poi_type_counts": Counter(),
         "structure_counts": Counter(),
         "mtf_alignment_counts": Counter(),
+        "mtf_direction_alignment_counts": Counter(),
         "htf_direction_counts": Counter(),
         "ltf_direction_counts": Counter(),
         "htf_structure_ok_counts": Counter(),
@@ -552,6 +558,10 @@ def count_blocker_details(setups: list[dict[str, Any]]) -> dict[str, dict[str, i
             if "mtf_aligned" in poi:
                 counts["mtf_alignment_counts"].update(
                     [str(bool(poi.get("mtf_aligned", False))).lower()]
+                )
+            if "mtf_direction_aligned" in poi:
+                counts["mtf_direction_alignment_counts"].update(
+                    [str(bool(poi.get("mtf_direction_aligned", False))).lower()]
                 )
             if "htf_direction" in poi:
                 counts["htf_direction_counts"].update(
@@ -975,9 +985,13 @@ class ReadOnlyStrategyObserver:
             "trend": trend,
             "direction": trend,
             "trend_ok": True,
-            "structure_ok": bool(final_structure.get("is_confirmed", False)),
+            "structure_ok": bool(final_structure.get("structure_ok", False)),
+            "structure_confirmed": bool(final_structure.get("is_confirmed", False)),
             "poi_ok": poi_side_aligned and smc_ok,
             "smc_ok": smc_ok,
+            "mtf_direction_aligned": bool(
+                mtf_context.get("mtf_direction_aligned", False)
+            ),
             "mtf_aligned": bool(mtf_context.get("mtf_aligned", False)),
             "htf_direction": htf_structure.get("direction"),
             "ltf_direction": ltf_structure.get("direction"),
