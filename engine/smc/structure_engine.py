@@ -169,6 +169,12 @@ class StructureEngine:
             "swing_highs_count": 0,
             "swing_lows_count": 0,
             "scan_depth": 0,
+            "nearest_major_high": None,
+            "nearest_major_low": None,
+            "distance_to_major_high_pct": None,
+            "distance_to_major_low_pct": None,
+            "closest_level_side": None,
+            "closest_level_distance_pct": None,
             "is_choch": False, # [INSTITUTIONAL SCALING]
             "market_phase": "FLAT", # [INSTITUTIONAL SCALING]
             "displacement": {
@@ -218,6 +224,30 @@ class StructureEngine:
                 candle_high = highs[idx]
                 candle_low = lows[idx]
                 candle_close = closes[idx]
+
+                if (
+                    res["nearest_major_high"] is None
+                    and res["nearest_major_low"] is None
+                    and candle_close > 0
+                ):
+                    distance_to_high = abs(major_high - candle_close) / candle_close * 100
+                    distance_to_low = abs(candle_close - major_low) / candle_close * 100
+                    if distance_to_high <= distance_to_low:
+                        closest_side = "HIGH"
+                        closest_distance = distance_to_high
+                    else:
+                        closest_side = "LOW"
+                        closest_distance = distance_to_low
+                    res.update(
+                        {
+                            "nearest_major_high": float(major_high),
+                            "nearest_major_low": float(major_low),
+                            "distance_to_major_high_pct": round(distance_to_high, 4),
+                            "distance_to_major_low_pct": round(distance_to_low, 4),
+                            "closest_level_side": closest_side,
+                            "closest_level_distance_pct": round(closest_distance, 4),
+                        }
+                    )
 
                 # Оцениваем макро-тренд перед пробоем
                 phase = self._evaluate_micro_trend(df, swing_highs, swing_lows, idx)

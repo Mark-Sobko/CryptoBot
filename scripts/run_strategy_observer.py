@@ -128,6 +128,23 @@ def safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def distance_bucket_pct(value: Any) -> str:
+    try:
+        distance = abs(float(value))
+    except Exception:
+        return "unknown"
+
+    if distance <= 0.25:
+        return "<=0.25%"
+    if distance <= 0.5:
+        return "<=0.50%"
+    if distance <= 1.0:
+        return "<=1.00%"
+    if distance <= 2.0:
+        return "<=2.00%"
+    return ">2.00%"
+
+
 def compact_poi(poi: dict[str, Any] | None) -> dict[str, Any] | None:
     if not poi:
         return None
@@ -377,6 +394,18 @@ def structure_diagnostics(prefix: str, analysis: dict[str, Any]) -> dict[str, An
         "swing_highs_count": analysis.get(f"{prefix}_swing_highs_count"),
         "swing_lows_count": analysis.get(f"{prefix}_swing_lows_count"),
         "scan_depth": analysis.get(f"{prefix}_scan_depth"),
+        "nearest_major_high": analysis.get(f"{prefix}_nearest_major_high"),
+        "nearest_major_low": analysis.get(f"{prefix}_nearest_major_low"),
+        "distance_to_major_high_pct": analysis.get(
+            f"{prefix}_distance_to_major_high_pct"
+        ),
+        "distance_to_major_low_pct": analysis.get(
+            f"{prefix}_distance_to_major_low_pct"
+        ),
+        "closest_level_side": analysis.get(f"{prefix}_closest_level_side"),
+        "closest_level_distance_pct": analysis.get(
+            f"{prefix}_closest_level_distance_pct"
+        ),
     }
 
 
@@ -590,6 +619,10 @@ def count_blocker_details(setups: list[dict[str, Any]]) -> dict[str, dict[str, i
         "ltf_market_phase_counts": Counter(),
         "htf_displacement_valid_counts": Counter(),
         "ltf_displacement_valid_counts": Counter(),
+        "htf_closest_level_side_counts": Counter(),
+        "ltf_closest_level_side_counts": Counter(),
+        "htf_closest_level_distance_bucket_counts": Counter(),
+        "ltf_closest_level_distance_bucket_counts": Counter(),
         "poi_side_alignment_counts": Counter(),
         "m5_trigger_counts": Counter(),
         "pd_alignment_counts": Counter(),
@@ -649,6 +682,18 @@ def count_blocker_details(setups: list[dict[str, Any]]) -> dict[str, dict[str, i
                 counts["htf_displacement_valid_counts"].update(
                     [str(bool(htf_structure.get("displacement_valid", False))).lower()]
                 )
+                if "closest_level_side" in htf_structure:
+                    counts["htf_closest_level_side_counts"].update(
+                        [str(htf_structure.get("closest_level_side") or "unknown")]
+                    )
+                if "closest_level_distance_pct" in htf_structure:
+                    counts["htf_closest_level_distance_bucket_counts"].update(
+                        [
+                            distance_bucket_pct(
+                                htf_structure.get("closest_level_distance_pct")
+                            )
+                        ]
+                    )
             ltf_structure = poi.get("ltf_structure")
             if isinstance(ltf_structure, dict):
                 counts["ltf_structure_reason_counts"].update(
@@ -663,6 +708,18 @@ def count_blocker_details(setups: list[dict[str, Any]]) -> dict[str, dict[str, i
                 counts["ltf_displacement_valid_counts"].update(
                     [str(bool(ltf_structure.get("displacement_valid", False))).lower()]
                 )
+                if "closest_level_side" in ltf_structure:
+                    counts["ltf_closest_level_side_counts"].update(
+                        [str(ltf_structure.get("closest_level_side") or "unknown")]
+                    )
+                if "closest_level_distance_pct" in ltf_structure:
+                    counts["ltf_closest_level_distance_bucket_counts"].update(
+                        [
+                            distance_bucket_pct(
+                                ltf_structure.get("closest_level_distance_pct")
+                            )
+                        ]
+                    )
             if "side_aligned" in poi:
                 counts["poi_side_alignment_counts"].update(
                     [str(bool(poi.get("side_aligned", False))).lower()]
@@ -1076,6 +1133,30 @@ class ReadOnlyStrategyObserver:
             "ltf_swing_lows_count": ltf_structure.get("swing_lows_count"),
             "htf_scan_depth": htf_structure.get("scan_depth"),
             "ltf_scan_depth": ltf_structure.get("scan_depth"),
+            "htf_nearest_major_high": htf_structure.get("nearest_major_high"),
+            "ltf_nearest_major_high": ltf_structure.get("nearest_major_high"),
+            "htf_nearest_major_low": htf_structure.get("nearest_major_low"),
+            "ltf_nearest_major_low": ltf_structure.get("nearest_major_low"),
+            "htf_distance_to_major_high_pct": htf_structure.get(
+                "distance_to_major_high_pct"
+            ),
+            "ltf_distance_to_major_high_pct": ltf_structure.get(
+                "distance_to_major_high_pct"
+            ),
+            "htf_distance_to_major_low_pct": htf_structure.get(
+                "distance_to_major_low_pct"
+            ),
+            "ltf_distance_to_major_low_pct": ltf_structure.get(
+                "distance_to_major_low_pct"
+            ),
+            "htf_closest_level_side": htf_structure.get("closest_level_side"),
+            "ltf_closest_level_side": ltf_structure.get("closest_level_side"),
+            "htf_closest_level_distance_pct": htf_structure.get(
+                "closest_level_distance_pct"
+            ),
+            "ltf_closest_level_distance_pct": ltf_structure.get(
+                "closest_level_distance_pct"
+            ),
             "poi_side_aligned": poi_side_aligned,
             "poi_side": final_poi.get("side") if final_poi else None,
             "m5_ok": self.confirmation.check_m5_entry(data["5m"], trend),

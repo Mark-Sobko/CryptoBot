@@ -1,3 +1,4 @@
+import math
 import os
 import unittest
 
@@ -16,6 +17,7 @@ from scripts.run_strategy_observer import (
     compact_setup,
     count_blocker_details,
     count_setup_roles,
+    distance_bucket_pct,
     effective_liquidity_target,
     execution_waits,
     news_score_bonus,
@@ -425,6 +427,32 @@ class StrategyObserverTests(unittest.TestCase):
         self.assertEqual(flat_result["swing_highs_count"], 0)
         self.assertEqual(flat_result["swing_lows_count"], 0)
 
+    def test_structure_engine_reports_major_level_proximity(self):
+        engine = StructureEngine()
+        rows = []
+        for i in range(100):
+            base = 100.0 + math.sin(i / 3.0) * 2.0 if i < 90 else 100.0
+            rows.append(
+                {
+                    "open": base - 0.1,
+                    "high": base + 0.8,
+                    "low": base - 0.8,
+                    "close": base,
+                    "volume": 100.0,
+                }
+            )
+        frame = pd.DataFrame(rows)
+
+        result = engine.detect_structure(frame)
+
+        self.assertEqual(result["reason"], "no_break_or_sweep")
+        self.assertIsNotNone(result["nearest_major_high"])
+        self.assertIsNotNone(result["nearest_major_low"])
+        self.assertIsNotNone(result["closest_level_side"])
+        self.assertIsNotNone(result["closest_level_distance_pct"])
+        self.assertGreaterEqual(result["distance_to_major_high_pct"], 0)
+        self.assertGreaterEqual(result["distance_to_major_low_pct"], 0)
+
     def test_structure_diagnostics_compacts_prefixed_analysis(self):
         compact = structure_diagnostics(
             "htf",
@@ -443,6 +471,12 @@ class StrategyObserverTests(unittest.TestCase):
                 "htf_swing_highs_count": 5,
                 "htf_swing_lows_count": 4,
                 "htf_scan_depth": 12,
+                "htf_nearest_major_high": 1.05,
+                "htf_nearest_major_low": 0.95,
+                "htf_distance_to_major_high_pct": 0.42,
+                "htf_distance_to_major_low_pct": 2.15,
+                "htf_closest_level_side": "HIGH",
+                "htf_closest_level_distance_pct": 0.42,
             },
         )
 
@@ -450,6 +484,9 @@ class StrategyObserverTests(unittest.TestCase):
         self.assertEqual(compact["reason"], "displacement_not_valid")
         self.assertFalse(compact["displacement_valid"])
         self.assertEqual(compact["displacement_strength"], 0.72)
+        self.assertEqual(compact["closest_level_side"], "HIGH")
+        self.assertEqual(compact["closest_level_distance_pct"], 0.42)
+        self.assertEqual(distance_bucket_pct(compact["closest_level_distance_pct"]), "<=0.50%")
         self.assertTrue(compact["volume_confirmed"])
 
     def test_blocker_details_reports_missing_poi_and_m5_metrics(self):
@@ -534,12 +571,16 @@ class StrategyObserverTests(unittest.TestCase):
                                 "type": None,
                                 "market_phase": "FLAT",
                                 "displacement_valid": False,
+                                "closest_level_side": "HIGH",
+                                "closest_level_distance_pct": 0.42,
                             },
                             "ltf_structure": {
                                 "reason": "sweep_confirmed",
                                 "type": "SWEEP",
                                 "market_phase": "BEARISH",
                                 "displacement_valid": False,
+                                "closest_level_side": "LOW",
+                                "closest_level_distance_pct": 2.5,
                             },
                             "side_aligned": True,
                         },
@@ -572,6 +613,16 @@ class StrategyObserverTests(unittest.TestCase):
         self.assertEqual(counts["ltf_market_phase_counts"], {"BEARISH": 1})
         self.assertEqual(counts["htf_displacement_valid_counts"], {"false": 1})
         self.assertEqual(counts["ltf_displacement_valid_counts"], {"false": 1})
+        self.assertEqual(counts["htf_closest_level_side_counts"], {"HIGH": 1})
+        self.assertEqual(counts["ltf_closest_level_side_counts"], {"LOW": 1})
+        self.assertEqual(
+            counts["htf_closest_level_distance_bucket_counts"],
+            {"<=0.50%": 1},
+        )
+        self.assertEqual(
+            counts["ltf_closest_level_distance_bucket_counts"],
+            {">2.00%": 1},
+        )
         self.assertEqual(counts["poi_side_alignment_counts"], {"true": 1})
         self.assertEqual(counts["m5_trigger_counts"], {"false": 1})
         self.assertEqual(counts["pd_alignment_counts"], {"false": 2})
