@@ -552,7 +552,8 @@ def compact_setup(result: dict[str, Any]) -> dict[str, Any]:
     missing = missing_confluences(result)
     if missing:
         compact["missing_confluences"] = missing
-    details = blocker_details(result)
+    existing_details = result.get("blocker_details")
+    details = existing_details if isinstance(existing_details, dict) else blocker_details(result)
     if details:
         compact["blocker_details"] = details
     plan = result.get("signal_plan")
@@ -572,6 +573,71 @@ def compact_setup(result: dict[str, Any]) -> dict[str, Any]:
             "min_stop_pct": plan.get("min_stop_pct"),
         }
     return compact
+
+
+def structure_proximity_record(
+    setup: dict[str, Any],
+    *,
+    timeframe: str,
+) -> dict[str, Any] | None:
+    details = setup.get("blocker_details")
+    if not isinstance(details, dict):
+        return None
+
+    poi = details.get("poi")
+    if not isinstance(poi, dict):
+        return None
+
+    structure = poi.get(f"{timeframe}_structure")
+    if not isinstance(structure, dict):
+        return None
+
+    try:
+        distance = float(structure.get("closest_level_distance_pct"))
+    except Exception:
+        return None
+
+    return {
+        "symbol": setup.get("symbol"),
+        "trend": setup.get("trend"),
+        "setup_state": setup.get("setup_state"),
+        "distance_pct": round(distance, 4),
+        "distance_bucket": distance_bucket_pct(distance),
+        "closest_level_side": structure.get("closest_level_side"),
+        "nearest_major_high": structure.get("nearest_major_high"),
+        "nearest_major_low": structure.get("nearest_major_low"),
+        "structure_reason": structure.get("reason"),
+        "structure_ok": bool(structure.get("structure_ok", False)),
+        "failed_checks": setup.get("failed_checks", []),
+    }
+
+
+def closest_structure_setups(
+    setups: list[dict[str, Any]],
+    *,
+    timeframe: str,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    best_by_symbol: dict[tuple[Any, Any, Any], dict[str, Any]] = {}
+
+    for setup in setups:
+        record = structure_proximity_record(setup, timeframe=timeframe)
+        if not record:
+            continue
+
+        key = (record.get("symbol"), record.get("trend"), record.get("setup_state"))
+        current = best_by_symbol.get(key)
+        if current is None or record["distance_pct"] < current["distance_pct"]:
+            best_by_symbol[key] = record
+
+    return sorted(
+        best_by_symbol.values(),
+        key=lambda item: (
+            item.get("distance_pct", 999.0),
+            str(item.get("symbol") or ""),
+            str(item.get("trend") or ""),
+        ),
+    )[:limit]
 
 
 def count_setup_roles(setups: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
@@ -860,6 +926,7 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
     near_setup_execution_wait_counts: Counter[str] = Counter()
     blocker_detail_counts: dict[str, Counter[str]] = {}
     setup_role_counts: dict[str, Counter[str]] = {}
+    all_near_setups: list[dict[str, Any]] = []
 
     for cycle in cycles:
         summary = summarize_cycle(cycle)
@@ -919,6 +986,7 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
             )
             waiting_setups_by_key[key] = setup
         for setup in summary["near_setups"]:
+            all_near_setups.append(setup)
             near_setup_counts.update([str(setup.get("symbol", "UNKNOWN"))])
             near_setup_failed_check_counts.update(str(item) for item in setup.get("failed_checks", []))
             near_setup_hard_blocker_counts.update(
@@ -950,6 +1018,14 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
         "waiting_setups": list(waiting_setups_by_key.values()),
         "errors": errors,
         "near_setups": list(near_setups_by_key.values()),
+        "closest_htf_setups": closest_structure_setups(
+            all_near_setups,
+            timeframe="htf",
+        ),
+        "closest_ltf_setups": closest_structure_setups(
+            all_near_setups,
+            timeframe="ltf",
+        ),
         "signal_counts": dict(sorted(signal_counts.items())),
         "signal_route_counts": dict(sorted(signal_route_counts.items())),
         "signal_failed_check_counts": dict(sorted(signal_failed_check_counts.items())),

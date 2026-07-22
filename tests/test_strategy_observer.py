@@ -17,6 +17,7 @@ from scripts.run_strategy_observer import (
     compact_setup,
     count_blocker_details,
     count_setup_roles,
+    closest_structure_setups,
     distance_bucket_pct,
     effective_liquidity_target,
     execution_waits,
@@ -822,6 +823,86 @@ class StrategyObserverTests(unittest.TestCase):
         self.assertEqual(
             summary["blocker_detail_counts"]["poi_reason_counts"],
             {"missing": 2},
+        )
+
+    def test_summarize_cycles_reports_closest_structure_setups(self):
+        first = {
+            "symbol": "POLUSDT",
+            "status": "REJECT",
+            "setup_state": "WAIT_HTF_STRUCTURE",
+            "trend": "SHORT",
+            "reason": "score_below_threshold:0/55",
+            "failed_checks": ["structure", "poi"],
+            "blocker_details": {
+                "poi": {
+                    "htf_structure": {
+                        "closest_level_distance_pct": 0.8,
+                        "closest_level_side": "LOW",
+                        "nearest_major_high": 0.083,
+                        "nearest_major_low": 0.079,
+                        "reason": "no_break_or_sweep",
+                        "structure_ok": False,
+                    },
+                    "ltf_structure": {
+                        "closest_level_distance_pct": 0.3,
+                        "closest_level_side": "LOW",
+                        "reason": "sweep_confirmed",
+                        "structure_ok": True,
+                    },
+                }
+            },
+        }
+        closer = {
+            **first,
+            "blocker_details": {
+                "poi": {
+                    "htf_structure": {
+                        "closest_level_distance_pct": 0.42,
+                        "closest_level_side": "LOW",
+                        "nearest_major_high": 0.083,
+                        "nearest_major_low": 0.079,
+                        "reason": "no_break_or_sweep",
+                        "structure_ok": False,
+                    },
+                    "ltf_structure": {
+                        "closest_level_distance_pct": 0.25,
+                        "closest_level_side": "LOW",
+                        "reason": "sweep_confirmed",
+                        "structure_ok": True,
+                    },
+                }
+            },
+        }
+        farther = {
+            **first,
+            "symbol": "LINKUSDT",
+            "trend": "LONG",
+            "blocker_details": {
+                "poi": {
+                    "htf_structure": {
+                        "closest_level_distance_pct": 1.4,
+                        "closest_level_side": "HIGH",
+                        "reason": "no_break_or_sweep",
+                        "structure_ok": False,
+                    }
+                }
+            },
+        }
+
+        summary = summarize_cycles(
+            [
+                {"results": [first, farther]},
+                {"results": [closer]},
+            ]
+        )
+
+        self.assertEqual(summary["closest_htf_setups"][0]["symbol"], "POLUSDT")
+        self.assertEqual(summary["closest_htf_setups"][0]["distance_pct"], 0.42)
+        self.assertEqual(summary["closest_htf_setups"][0]["distance_bucket"], "<=0.50%")
+        self.assertEqual(summary["closest_ltf_setups"][0]["distance_pct"], 0.25)
+        self.assertEqual(
+            closest_structure_setups([first, closer], timeframe="htf")[0]["distance_pct"],
+            0.42,
         )
 
     def test_compact_setup_includes_compact_signal_plan(self):
