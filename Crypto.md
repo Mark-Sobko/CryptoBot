@@ -66,6 +66,21 @@ python3 scripts/run_paper_lifecycle.py --db /tmp/cryptobot_paper_partial_lifecyc
 .venv/bin/python scripts/run_bybit_demo_lifecycle.py --partial-fill-probe-only --max-notional 25 --wait 8 --partial-fill-dynamic-candidates 10 --partial-fill-max-scan 250 --partial-fill-target-notional-pct 0.95 --partial-fill-price-levels 5 --partial-fill-orderbook-depth 50 --partial-fill-poll-interval 0.1
 ```
 
+Guarded `main.py` demo launch:
+
+```bash
+BYBIT_DEMO=true BYBIT_TESTNET=false .venv/bin/python main.py
+```
+
+`main.py` refuses live trading unless
+`RISK_MANAGEMENT["global"]["allow_live_trading"]` is explicitly set to `True`.
+The default runtime guard allows only one new entry per run, one new entry per
+cycle, a 25 USDT max order notional, and a 30 minute process runtime while
+active position management remains enabled during the run. The global drawdown
+breaker stops the process when equity falls through
+`max_drawdown_limit_pct`. `start.sh` uses the existing `.venv`, defaults to demo
+mode, and does not restart the bot unless `MAX_RESTARTS` is set.
+
 `run_bybit_demo_lifecycle.py` fails closed unless `BYBIT_DEMO=true` or
 `BYBIT_TESTNET=true`. It covers safe create/amend/cancel, expected retCode
 failures, partial reduce-only close, reduce-only TP, stop-loss set/clear,

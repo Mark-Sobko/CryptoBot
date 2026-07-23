@@ -1,9 +1,12 @@
 import os
+import datetime
+import importlib
 import logging
 import sys
 import tempfile
 import types
 import unittest
+from unittest import mock
 
 
 os.environ.setdefault("BYBIT_API_KEY", "test-key")
@@ -45,6 +48,18 @@ class ExecutionSafetyTests(unittest.TestCase):
         unified_trading.HTTP = HTTP
         sys.modules["pybit"] = pybit
         sys.modules["pybit.unified_trading"] = unified_trading
+
+    @staticmethod
+    def _import_institutional_bot():
+        pandas_module = sys.modules.get("pandas")
+        if pandas_module is not None and getattr(pandas_module, "__file__", None) is None:
+            sys.modules.pop("pandas", None)
+
+        for module_name in list(sys.modules):
+            if module_name in {"main", "engine.filters"} or module_name.startswith("pandas_ta"):
+                sys.modules.pop(module_name, None)
+
+        return importlib.import_module("main").InstitutionalBot
 
     def test_poi_reference_price_falls_back_to_midpoint(self):
         from core.executor import TradeExecutor
@@ -642,6 +657,93 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertTrue(all(value is not None for value in session.order_params.values()))
         self.assertEqual(session.order_params["timeInForce"], "GTC")
         self.assertEqual(executor.database_sync.saved[0]["status"], "PENDING_ORDER")
+
+    def test_main_refuses_live_mode_without_explicit_config_flag(self):
+        import config
+        InstitutionalBot = self._import_institutional_bot()
+
+        bot = InstitutionalBot.__new__(InstitutionalBot)
+        global_cfg = dict(config.RISK_MANAGEMENT["global"])
+        global_cfg["allow_live_trading"] = False
+        risk_cfg = dict(config.RISK_MANAGEMENT)
+        risk_cfg["global"] = global_cfg
+
+        with (
+            mock.patch.object(config, "BYBIT_DEMO", False),
+            mock.patch.object(config, "BYBIT_TESTNET", False),
+            mock.patch.object(config, "RISK_MANAGEMENT", risk_cfg),
+            self.assertRaisesRegex(RuntimeError, "refuses live trading"),
+        ):
+            bot._validate_runtime_environment()
+
+    def test_main_allows_demo_runtime_environment(self):
+        import config
+        InstitutionalBot = self._import_institutional_bot()
+
+        bot = InstitutionalBot.__new__(InstitutionalBot)
+
+        with (
+            mock.patch.object(config, "BYBIT_DEMO", True),
+            mock.patch.object(config, "BYBIT_TESTNET", False),
+        ):
+            bot._validate_runtime_environment()
+
+    def test_main_runtime_limit_stops_gracefully(self):
+        InstitutionalBot = self._import_institutional_bot()
+
+        bot = InstitutionalBot.__new__(InstitutionalBot)
+        bot.logger = logging.getLogger("test.InstitutionalBot")
+        bot.is_running = True
+        bot.max_runtime_minutes = 1.0
+        bot.started_at = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=2)
+
+        self.assertTrue(bot._runtime_limit_reached())
+        self.assertFalse(bot.is_running)
+
+    def test_main_drawdown_limit_stops_gracefully(self):
+        InstitutionalBot = self._import_institutional_bot()
+
+        bot = InstitutionalBot.__new__(InstitutionalBot)
+        bot.logger = logging.getLogger("test.InstitutionalBot")
+        bot.is_running = True
+        bot.initial_balance = 1000.0
+        bot.max_drawdown_limit_pct = 10.0
+        bot.last_drawdown_pct = 0.0
+
+        self.assertTrue(bot._drawdown_limit_reached(890.0))
+        self.assertFalse(bot.is_running)
+        self.assertAlmostEqual(bot.last_drawdown_pct, 11.0)
+
+    def test_main_caps_qty_by_order_notional(self):
+        InstitutionalBot = self._import_institutional_bot()
+
+        bot = InstitutionalBot.__new__(InstitutionalBot)
+        bot.logger = logging.getLogger("test.InstitutionalBot")
+        bot.max_order_notional_usd = 25.0
+
+        self.assertAlmostEqual(bot._cap_qty_by_notional("WIFUSDT", 1000.0, 0.05), 500.0)
+        self.assertEqual(bot._cap_qty_by_notional("WIFUSDT", 10.0, 0.05), 10.0)
+
+    def test_main_order_guards_block_run_and_cycle_overflow(self):
+        InstitutionalBot = self._import_institutional_bot()
+
+        bot = InstitutionalBot.__new__(InstitutionalBot)
+        bot.logger = logging.getLogger("test.InstitutionalBot")
+        bot.max_orders_per_run = 1
+        bot.max_orders_per_cycle = 1
+        bot.orders_submitted_this_run = 1
+        bot.orders_submitted_this_cycle = 0
+
+        self.assertFalse(bot._execution_guard_allows_new_order("BTCUSDT"))
+
+        bot.orders_submitted_this_run = 0
+        bot.orders_submitted_this_cycle = 1
+
+        self.assertFalse(bot._execution_guard_allows_new_order("ETHUSDT"))
+
+        bot.orders_submitted_this_cycle = 0
+
+        self.assertTrue(bot._execution_guard_allows_new_order("SOLUSDT"))
 
 
 if __name__ == "__main__":

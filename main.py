@@ -1,4 +1,5 @@
 import logging
+import math
 import time
 import datetime
 import signal
@@ -29,6 +30,9 @@ class InstitutionalBot:
         self.audit = TradeLogger()
         self.logger = logging.getLogger("SMC_BOT.MainEngine")
 
+        self._load_runtime_safeguards()
+        self._validate_runtime_environment()
+
         self.db = TradeDatabase()
         self.ex = ExchangeManager()
         self.notifier = TelegramNotifier()
@@ -38,6 +42,7 @@ class InstitutionalBot:
         if initial_balance <= 0:
             raise ValueError("Exchange balance is zero or unavailable")
 
+        self.initial_balance = initial_balance
         self.risk_manager = RiskManager(balance=initial_balance)
 
         self.filters = MarketFilters()
@@ -56,9 +61,127 @@ class InstitutionalBot:
         self.news_filter = NewsFilter()
         self.logger.info("🤖 [INIT] InstitutionalBot initialized successfully")
 
+    def _load_runtime_safeguards(self) -> None:
+        global_cfg = config.RISK_MANAGEMENT.get("global", {})
+        self.started_at = datetime.datetime.now(datetime.timezone.utc)
+        self.max_runtime_minutes = float(global_cfg.get("max_runtime_minutes", 0) or 0)
+        self.max_orders_per_run = int(global_cfg.get("max_orders_per_run", 0) or 0)
+        self.max_orders_per_cycle = int(global_cfg.get("max_orders_per_cycle", 0) or 0)
+        self.max_order_notional_usd = float(global_cfg.get("max_order_notional_usd", 0) or 0)
+        self.max_drawdown_limit_pct = float(global_cfg.get("max_drawdown_limit_pct", 0) or 0)
+        self.last_drawdown_pct = 0.0
+        self.orders_submitted_this_run = 0
+        self.orders_submitted_this_cycle = 0
+
+    def _validate_runtime_environment(self) -> None:
+        global_cfg = config.RISK_MANAGEMENT.get("global", {})
+        allow_live = bool(global_cfg.get("allow_live_trading", False))
+
+        if not (config.BYBIT_DEMO or config.BYBIT_TESTNET) and not allow_live:
+            raise RuntimeError(
+                "SAFEGUARD: main.py refuses live trading unless "
+                "RISK_MANAGEMENT['global']['allow_live_trading'] is True"
+            )
+
     def _handle_exit(self, signum, frame) -> None:
         self.logger.info("--- [SYSTEM SHUTDOWN] Stop signal received ---")
         self.is_running = False
+
+    def _runtime_limit_reached(self) -> bool:
+        if self.max_runtime_minutes <= 0:
+            return False
+
+        elapsed_minutes = (
+            datetime.datetime.now(datetime.timezone.utc) - self.started_at
+        ).total_seconds() / 60.0
+
+        if elapsed_minutes < self.max_runtime_minutes:
+            return False
+
+        self.logger.warning(
+            f"🛑 [RUNTIME GUARD] Max runtime reached: "
+            f"{elapsed_minutes:.2f}/{self.max_runtime_minutes:.2f} min. "
+            "Stopping new work and shutting down gracefully."
+        )
+        self.is_running = False
+        return True
+
+    def _run_order_limit_reached(self) -> bool:
+        return (
+            self.max_orders_per_run > 0
+            and self.orders_submitted_this_run >= self.max_orders_per_run
+        )
+
+    def _cycle_order_limit_reached(self) -> bool:
+        return (
+            self.max_orders_per_cycle > 0
+            and self.orders_submitted_this_cycle >= self.max_orders_per_cycle
+        )
+
+    def _execution_guard_allows_new_order(self, symbol: str) -> bool:
+        if self._run_order_limit_reached():
+            self.logger.warning(
+                f"🛑 [ORDER GUARD] {symbol} skipped: max_orders_per_run="
+                f"{self.max_orders_per_run} already reached"
+            )
+            return False
+
+        if self._cycle_order_limit_reached():
+            self.logger.warning(
+                f"🛑 [ORDER GUARD] {symbol} skipped: max_orders_per_cycle="
+                f"{self.max_orders_per_cycle} already reached"
+            )
+            return False
+
+        return True
+
+    def _cap_qty_by_notional(self, symbol: str, qty: float, entry_price: float) -> float:
+        if self.max_order_notional_usd <= 0:
+            return qty
+
+        if not all(math.isfinite(value) and value > 0 for value in [qty, entry_price]):
+            return 0.0
+
+        notional = qty * entry_price
+        if notional <= self.max_order_notional_usd:
+            return qty
+
+        capped_qty = self.max_order_notional_usd / entry_price
+        self.logger.warning(
+            f"🛡️ [NOTIONAL GUARD] {symbol} qty reduced by max_order_notional_usd: "
+            f"{notional:.2f} -> {self.max_order_notional_usd:.2f} USDT"
+        )
+        return capped_qty
+
+    def _record_submitted_order(self, symbol: str) -> None:
+        self.orders_submitted_this_run += 1
+        self.orders_submitted_this_cycle += 1
+        self.logger.info(
+            f"🧮 [ORDER GUARD] {symbol} submitted. "
+            f"run={self.orders_submitted_this_run}/{self.max_orders_per_run or 'unlimited'}, "
+            f"cycle={self.orders_submitted_this_cycle}/{self.max_orders_per_cycle or 'unlimited'}"
+        )
+
+    def _drawdown_limit_reached(self, current_balance: float) -> bool:
+        if self.max_drawdown_limit_pct <= 0:
+            return False
+
+        initial_balance = float(getattr(self, "initial_balance", 0.0) or 0.0)
+        if not all(math.isfinite(value) and value > 0 for value in [initial_balance, current_balance]):
+            return False
+
+        drawdown_pct = max(0.0, (initial_balance - current_balance) / initial_balance * 100.0)
+        self.last_drawdown_pct = drawdown_pct
+
+        if drawdown_pct < self.max_drawdown_limit_pct:
+            return False
+
+        self.logger.critical(
+            f"🚨 [GLOBAL DRAWDOWN BREAKER] Drawdown limit reached: "
+            f"{drawdown_pct:.2f}%/{self.max_drawdown_limit_pct:.2f}%"
+        )
+        self.is_running = False
+        return True
 
     def run(self) -> None:
         self.logger.info("--- [SYSTEM START] SMC Institutional Alpha v5.0 ---")
@@ -67,12 +190,24 @@ class InstitutionalBot:
         )
 
         while self.is_running:
+            if self._runtime_limit_reached():
+                break
+
             try:
                 current_balance = self.ex.get_total_balance()
                 if current_balance > 0:
                     self.risk_manager.balance = current_balance
                 else:
                     current_balance = self.risk_manager.balance
+
+                if self._drawdown_limit_reached(current_balance):
+                    self.notifier.send_message(
+                        f"🚨 <b>Global Drawdown Limit Reached</b>\n"
+                        f"Drawdown: <code>{self.last_drawdown_pct:.2f}%</code>\n"
+                        f"Limit: <code>{self.max_drawdown_limit_pct:.2f}%</code>\n"
+                        "Бот остановлен через graceful shutdown."
+                    )
+                    break
 
                 risk_cfg = config.get_current_risk()
                 now = datetime.datetime.now(datetime.timezone.utc)
@@ -119,7 +254,7 @@ class InstitutionalBot:
 
     def _sleep_interruptible(self, seconds: int) -> None:
         for _ in range(int(seconds)):
-            if not self.is_running:
+            if not self.is_running or self._runtime_limit_reached():
                 break
             time.sleep(1)
 
@@ -141,6 +276,15 @@ class InstitutionalBot:
             self.logger.error(f"Position management error: {e}", exc_info=True)
 
     def _scan_market(self, risk_cfg: Dict[str, Any], current_balance: float) -> None:
+        self.orders_submitted_this_cycle = 0
+
+        if self._run_order_limit_reached():
+            self.logger.info(
+                "🛑 [ORDER GUARD] Run order limit already reached. "
+                "New-entry scan skipped; active trade management remains enabled."
+            )
+            return
+
         self.ex.sync_db_with_exchange(self.db) 
         summary_list = []
 
@@ -156,6 +300,16 @@ class InstitutionalBot:
 
         for symbol in config.SYMBOLS:
             if not self.is_running:
+                break
+
+            if self._runtime_limit_reached():
+                break
+
+            if self._cycle_order_limit_reached():
+                self.logger.info(
+                    "🛑 [ORDER GUARD] Cycle order limit reached. "
+                    "Stopping new-entry scan for this cycle."
+                )
                 break
 
             if symbol in config.BLACKLIST:
@@ -387,6 +541,14 @@ class InstitutionalBot:
                     self.logger.warning(f"⚠️ {symbol} | Qty is zero after risk sizing")
                     continue
 
+                qty = self._cap_qty_by_notional(symbol, qty, execution_entry)
+                if qty <= 0:
+                    self.logger.warning(f"⚠️ {symbol} | Qty is zero after notional cap")
+                    continue
+
+                if not self._execution_guard_allows_new_order(symbol):
+                    continue
+
                 if not self.ex.can_open_new_trade(risk_cfg["max_open_trades"]):
                     self.logger.warning(
                         f"⚠️ {symbol} | Max positions reached: {risk_cfg['max_open_trades']}"
@@ -407,6 +569,7 @@ class InstitutionalBot:
                 # --- КОНЕЦ ГИБРИДНОГО БЛОКА ---
 
                 if entry_result:
+                    self._record_submitted_order(symbol)
                     status_text = "PENDING LIMIT" if is_limit_order else "ENTERED"
                     self.audit.log_attempt(
                         symbol,

@@ -99,7 +99,14 @@ RISK_MANAGEMENT: Final[Dict[str, Any]] = {
         "trading_hours_utc": [0, 24],
     },
     "global": {
+        "allow_live_trading": False,
+        "max_runtime_minutes": 30,
+        "max_orders_per_run": 1,
+        "max_orders_per_cycle": 1,
+        "max_order_notional_usd": 25.0,
         "max_drawdown_limit_pct": 10.0,
+        "max_portfolio_heat_pct": 6.0,
+        "max_slippage_pct": 0.2,
         "leverage": 10,
         "margin_type": "ISOLATED",
         "retry_attempts": 3,
@@ -207,6 +214,34 @@ def _validate_config() -> None:
     # 3. Проверка SMC настроек
     if SMC_SETTINGS.get("lookback_bars", 0) < 50:
         raise ValueError("[CONFIG CRITICAL] SMC_SETTINGS lookback_bars слишком мал для анализа.")
+
+    # 4. Runtime safeguards for main.py
+    global_cfg = RISK_MANAGEMENT.get("global", {})
+    if not isinstance(global_cfg.get("allow_live_trading", False), bool):
+        raise ValueError("[CONFIG CRITICAL] allow_live_trading must be boolean.")
+
+    non_negative_limits = [
+        "max_runtime_minutes",
+        "max_orders_per_run",
+        "max_orders_per_cycle",
+        "max_order_notional_usd",
+    ]
+    for key in non_negative_limits:
+        value = float(global_cfg.get(key, 0))
+        if value < 0:
+            raise ValueError(f"[CONFIG CRITICAL] {key} must be >= 0.")
+
+    max_slippage_pct = float(global_cfg.get("max_slippage_pct", 0.2))
+    if not (0 < max_slippage_pct <= 10):
+        raise ValueError("[CONFIG CRITICAL] max_slippage_pct must be in (0, 10].")
+
+    max_portfolio_heat_pct = float(global_cfg.get("max_portfolio_heat_pct", 6.0))
+    if not (0 < max_portfolio_heat_pct <= 100):
+        raise ValueError("[CONFIG CRITICAL] max_portfolio_heat_pct must be in (0, 100].")
+
+    max_drawdown_limit_pct = float(global_cfg.get("max_drawdown_limit_pct", 10.0))
+    if not (0 <= max_drawdown_limit_pct <= 100):
+        raise ValueError("[CONFIG CRITICAL] max_drawdown_limit_pct must be in [0, 100].")
 
 # Запускаем проверку при импорте модуля
 _validate_config()
