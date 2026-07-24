@@ -69,6 +69,9 @@ class InstitutionalBot:
         self.max_orders_per_cycle = int(global_cfg.get("max_orders_per_cycle", 0) or 0)
         self.max_order_notional_usd = float(global_cfg.get("max_order_notional_usd", 0) or 0)
         self.max_drawdown_limit_pct = float(global_cfg.get("max_drawdown_limit_pct", 0) or 0)
+        self.require_m5_confirmation = bool(global_cfg.get("require_m5_confirmation", True))
+        self.require_pd_alignment = bool(global_cfg.get("require_pd_alignment", True))
+        self.require_liquidity_target = bool(global_cfg.get("require_liquidity_target", True))
         self.last_drawdown_pct = 0.0
         self.orders_submitted_this_run = 0
         self.orders_submitted_this_cycle = 0
@@ -161,6 +164,32 @@ class InstitutionalBot:
             f"run={self.orders_submitted_this_run}/{self.max_orders_per_run or 'unlimited'}, "
             f"cycle={self.orders_submitted_this_cycle}/{self.max_orders_per_cycle or 'unlimited'}"
         )
+
+    @staticmethod
+    def _has_effective_liquidity_target(analysis: Dict[str, Any]) -> bool:
+        if bool(analysis.get("has_liquidity_target", False)):
+            return True
+
+        trend = str(analysis.get("trend", analysis.get("direction", ""))).upper()
+        if trend == "LONG":
+            return bool(analysis.get("has_eqh", False))
+        if trend == "SHORT":
+            return bool(analysis.get("has_eql", False) or analysis.get("has_ql", False))
+        return False
+
+    def _missing_entry_quality_checks(self, analysis: Dict[str, Any]) -> list[str]:
+        missing: list[str] = []
+
+        if self.require_m5_confirmation and not bool(analysis.get("m5_ok", False)):
+            missing.append("m5")
+
+        if self.require_pd_alignment and not bool(analysis.get("is_pd_aligned", False)):
+            missing.append("pd_alignment")
+
+        if self.require_liquidity_target and not self._has_effective_liquidity_target(analysis):
+            missing.append("liquidity_target")
+
+        return missing
 
     def _drawdown_limit_reached(self, current_balance: float) -> bool:
         if self.max_drawdown_limit_pct <= 0:
@@ -423,6 +452,24 @@ class InstitutionalBot:
                         "symbol": symbol,
                         "status": "REJECT",
                         "reason": f"Недобор баллов ({score}/{risk_cfg['min_score_to_enter']})",
+                        "rel_vol": rel_vol,
+                    })
+                    time.sleep(2)
+                    continue
+
+                missing_entry_checks = self._missing_entry_quality_checks(analysis)
+                if missing_entry_checks:
+                    reason = ",".join(missing_entry_checks)
+                    self.logger.info(
+                        f"⏳ [ENTRY QUALITY WAIT] {symbol} | "
+                        f"score={score}/{risk_cfg['min_score_to_enter']} | waiting_for={reason}"
+                    )
+                    summary_list.append({
+                        "symbol": symbol,
+                        "status": "WAIT_CONFIRMATION",
+                        "side": trend,
+                        "score": score,
+                        "reason": f"waiting_for:{reason}",
                         "rel_vol": rel_vol,
                     })
                     time.sleep(2)

@@ -32,6 +32,42 @@ TELEGRAM_CHAT_ID: Final[str] = os.getenv("TELEGRAM_CHAT_ID", "")
 if not API_KEY or not API_SECRET:
     raise ValueError("[CRITICAL] BYBIT_API_KEY / BYBIT_API_SECRET missing in .env")
 
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+
+    raise ValueError(f"[CONFIG CRITICAL] {name} must be boolean.")
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None or value.strip() == "":
+        return default
+
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise ValueError(f"[CONFIG CRITICAL] {name} must be numeric.") from exc
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None or value.strip() == "":
+        return default
+
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise ValueError(f"[CONFIG CRITICAL] {name} must be integer.") from exc
+
 # --- [SMC & ANALYTICS CONFIG] ---
 class SMCConfig(TypedDict):
     lookback_bars: int
@@ -99,14 +135,17 @@ RISK_MANAGEMENT: Final[Dict[str, Any]] = {
         "trading_hours_utc": [0, 24],
     },
     "global": {
-        "allow_live_trading": False,
-        "max_runtime_minutes": 30,
-        "max_orders_per_run": 1,
-        "max_orders_per_cycle": 1,
-        "max_order_notional_usd": 25.0,
-        "max_drawdown_limit_pct": 10.0,
-        "max_portfolio_heat_pct": 6.0,
-        "max_slippage_pct": 0.2,
+        "allow_live_trading": _env_bool("ALLOW_LIVE_TRADING", False),
+        "max_runtime_minutes": _env_float("MAX_RUNTIME_MINUTES", 30.0),
+        "max_orders_per_run": _env_int("MAX_ORDERS_PER_RUN", 1),
+        "max_orders_per_cycle": _env_int("MAX_ORDERS_PER_CYCLE", 1),
+        "max_order_notional_usd": _env_float("MAX_ORDER_NOTIONAL_USD", 25.0),
+        "max_drawdown_limit_pct": _env_float("MAX_DRAWDOWN_LIMIT_PCT", 10.0),
+        "max_portfolio_heat_pct": _env_float("MAX_PORTFOLIO_HEAT_PCT", 6.0),
+        "max_slippage_pct": _env_float("MAX_SLIPPAGE_PCT", 0.2),
+        "require_m5_confirmation": _env_bool("REQUIRE_M5_CONFIRMATION", True),
+        "require_pd_alignment": _env_bool("REQUIRE_PD_ALIGNMENT", True),
+        "require_liquidity_target": _env_bool("REQUIRE_LIQUIDITY_TARGET", True),
         "leverage": 10,
         "margin_type": "ISOLATED",
         "retry_attempts": 3,
@@ -219,6 +258,15 @@ def _validate_config() -> None:
     global_cfg = RISK_MANAGEMENT.get("global", {})
     if not isinstance(global_cfg.get("allow_live_trading", False), bool):
         raise ValueError("[CONFIG CRITICAL] allow_live_trading must be boolean.")
+
+    boolean_flags = [
+        "require_m5_confirmation",
+        "require_pd_alignment",
+        "require_liquidity_target",
+    ]
+    for key in boolean_flags:
+        if not isinstance(global_cfg.get(key, True), bool):
+            raise ValueError(f"[CONFIG CRITICAL] {key} must be boolean.")
 
     non_negative_limits = [
         "max_runtime_minutes",

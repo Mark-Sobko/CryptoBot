@@ -745,6 +745,53 @@ class ExecutionSafetyTests(unittest.TestCase):
 
         self.assertTrue(bot._execution_guard_allows_new_order("SOLUSDT"))
 
+    def test_main_entry_quality_gate_reports_missing_checks(self):
+        InstitutionalBot = self._import_institutional_bot()
+
+        bot = InstitutionalBot.__new__(InstitutionalBot)
+        bot.require_m5_confirmation = True
+        bot.require_pd_alignment = True
+        bot.require_liquidity_target = True
+
+        analysis = {
+            "trend": "SHORT",
+            "m5_ok": False,
+            "is_pd_aligned": False,
+            "has_liquidity_target": False,
+            "has_eql": False,
+            "has_ql": False,
+        }
+
+        self.assertEqual(
+            bot._missing_entry_quality_checks(analysis),
+            ["m5", "pd_alignment", "liquidity_target"],
+        )
+
+        analysis["has_eql"] = True
+
+        self.assertEqual(
+            bot._missing_entry_quality_checks(analysis),
+            ["m5", "pd_alignment"],
+        )
+
+    def test_main_entry_quality_gate_can_be_disabled(self):
+        InstitutionalBot = self._import_institutional_bot()
+
+        bot = InstitutionalBot.__new__(InstitutionalBot)
+        bot.require_m5_confirmation = False
+        bot.require_pd_alignment = False
+        bot.require_liquidity_target = False
+
+        analysis = {
+            "trend": "LONG",
+            "m5_ok": False,
+            "is_pd_aligned": False,
+            "has_liquidity_target": False,
+            "has_eqh": False,
+        }
+
+        self.assertEqual(bot._missing_entry_quality_checks(analysis), [])
+
 
 if __name__ == "__main__":
     unittest.main()
