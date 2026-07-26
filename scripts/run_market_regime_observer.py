@@ -36,6 +36,8 @@ from engine.strategies.mean_reversion import STATUS_WATCH_ONLY as MR_STATUS_WATC
 from engine.strategies.mean_reversion import MeanReversionStrategy
 from engine.strategies.trend_pullback import STATUS_WATCH_ONLY as TP_STATUS_WATCH_ONLY
 from engine.strategies.trend_pullback import TrendPullbackStrategy
+from engine.strategies.volatility_expansion import STATUS_WATCH_ONLY as VE_STATUS_WATCH_ONLY
+from engine.strategies.volatility_expansion import VolatilityExpansionStrategy
 from engine.strategy_coordinator import ReadOnlyStrategyCoordinator
 from scripts.run_strategy_observer import (
     parse_symbols,
@@ -183,6 +185,55 @@ def compact_trend_pullback(result: dict[str, Any] | None) -> dict[str, Any] | No
     return compact
 
 
+def compact_volatility_expansion(result: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(result, dict):
+        return None
+
+    compact = {
+        "strategy": result.get("strategy"),
+        "status": result.get("status"),
+        "score": result.get("score"),
+        "threshold": result.get("threshold"),
+        "side": result.get("side"),
+        "reason": result.get("reason"),
+        "failed_checks": result.get("failed_checks", []),
+        "read_only": True,
+        "execution_disabled": True,
+    }
+
+    if result.get("status") == VE_STATUS_WATCH_ONLY:
+        compact["plan"] = {
+            "order_type": result.get("order_type"),
+            "entry": result.get("entry"),
+            "stop_loss": result.get("stop_loss"),
+            "target": result.get("target"),
+            "rr": result.get("rr"),
+        }
+
+    checks = result.get("checks")
+    if isinstance(checks, dict):
+        compact["checks"] = {
+            "atr_expansion_ratio": checks.get("atr_expansion_ratio"),
+            "min_atr_expansion_ratio": checks.get("min_atr_expansion_ratio"),
+            "volume_ratio": checks.get("volume_ratio"),
+            "min_volume_ratio": checks.get("min_volume_ratio"),
+            "body_ratio": checks.get("body_ratio"),
+            "min_body_ratio": checks.get("min_body_ratio"),
+            "extension_range_pct": checks.get("extension_range_pct"),
+            "max_extension_range_pct": checks.get("max_extension_range_pct"),
+            "extension_atr": checks.get("extension_atr"),
+            "max_extension_atr": checks.get("max_extension_atr"),
+            "htf_not_opposed": checks.get("htf_not_opposed"),
+            "held_beyond_edge": checks.get("held_beyond_edge"),
+            "continuation_direction": checks.get("continuation_direction"),
+            "continuation_body": checks.get("continuation_body"),
+            "five_volume_ratio": checks.get("five_volume_ratio"),
+            "min_rr": checks.get("min_rr"),
+        }
+
+    return compact
+
+
 def compact_decision(decision: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(decision, dict):
         return None
@@ -243,6 +294,10 @@ def compact_result(result: dict[str, Any]) -> dict[str, Any]:
     if trend_pullback:
         compact["trend_pullback"] = trend_pullback
 
+    volatility_expansion = compact_volatility_expansion(result.get("volatility_expansion"))
+    if volatility_expansion:
+        compact["volatility_expansion"] = volatility_expansion
+
     decision = compact_decision(result.get("decision"))
     if decision:
         compact["decision"] = decision
@@ -264,6 +319,10 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
     )
     trend_pullback_status_counts = Counter(
         str((result.get("trend_pullback") or {}).get("status", "UNKNOWN"))
+        for result in results
+    )
+    volatility_expansion_status_counts = Counter(
+        str((result.get("volatility_expansion") or {}).get("status", "UNKNOWN"))
         for result in results
     )
     coordinator_decision_counts = Counter(
@@ -295,6 +354,11 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         for result in results
         if (result.get("trend_pullback") or {}).get("status") == TP_STATUS_WATCH_ONLY
     ]
+    volatility_expansion_watches = [
+        compact_result(result)
+        for result in results
+        if (result.get("volatility_expansion") or {}).get("status") == VE_STATUS_WATCH_ONLY
+    ]
 
     high_confidence = [
         compact_result(result)
@@ -318,14 +382,17 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         "mean_reversion_watch_total": len(mean_reversion_watches),
         "breakout_watch_total": len(breakout_watches),
         "trend_pullback_watch_total": len(trend_pullback_watches),
+        "volatility_expansion_watch_total": len(volatility_expansion_watches),
         "range_edge_watches": range_watches[:10],
         "compression_watches": compression_watches[:10],
         "mean_reversion_watches": mean_reversion_watches[:10],
         "breakout_watches": breakout_watches[:10],
         "trend_pullback_watches": trend_pullback_watches[:10],
+        "volatility_expansion_watches": volatility_expansion_watches[:10],
         "mean_reversion_status_counts": dict(sorted(mean_reversion_status_counts.items())),
         "breakout_status_counts": dict(sorted(breakout_status_counts.items())),
         "trend_pullback_status_counts": dict(sorted(trend_pullback_status_counts.items())),
+        "volatility_expansion_status_counts": dict(sorted(volatility_expansion_status_counts.items())),
         "coordinator_decision_counts": dict(sorted(coordinator_decision_counts.items())),
         "high_confidence": high_confidence,
     }
@@ -363,6 +430,11 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
         1
         for cycle in cycles
         if (cycle.get("summary") or {}).get("trend_pullback_watch_total", 0)
+    )
+    summary["cycles_with_volatility_expansion_watch"] = sum(
+        1
+        for cycle in cycles
+        if (cycle.get("summary") or {}).get("volatility_expansion_watch_total", 0)
     )
     summary["errors_total"] = sum(
         1 for result in all_results if result.get("regime") == REGIME_DATA_ERROR
@@ -502,6 +574,7 @@ class ReadOnlyMarketRegimeObserver:
         self.mean_reversion = MeanReversionStrategy()
         self.breakout = BreakoutStrategy()
         self.trend_pullback = TrendPullbackStrategy()
+        self.volatility_expansion = VolatilityExpansionStrategy()
         self.coordinator = ReadOnlyStrategyCoordinator()
 
     def run_cycle(self, symbols: list[str]) -> dict[str, Any]:
@@ -545,10 +618,22 @@ class ReadOnlyMarketRegimeObserver:
                     df_15m=data.get("15m"),
                     df_5m=data.get("5m"),
                 )
+                volatility_expansion = self.volatility_expansion.analyze(
+                    symbol=symbol,
+                    regime_result=analyzed,
+                    df_1h=data.get("1h"),
+                    df_15m=data.get("15m"),
+                    df_5m=data.get("5m"),
+                )
                 decision = self.coordinator.decide(
                     symbol=symbol,
                     regime_result=analyzed,
-                    strategy_results=[mean_reversion, breakout, trend_pullback],
+                    strategy_results=[
+                        mean_reversion,
+                        breakout,
+                        trend_pullback,
+                        volatility_expansion,
+                    ],
                 )
                 setup = analyzed.get("setup")
                 setup_status = (
@@ -564,6 +649,7 @@ class ReadOnlyMarketRegimeObserver:
                         "mean_reversion": mean_reversion,
                         "breakout": breakout,
                         "trend_pullback": trend_pullback,
+                        "volatility_expansion": volatility_expansion,
                         "decision": decision,
                         **analyzed,
                     }

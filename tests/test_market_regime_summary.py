@@ -39,6 +39,20 @@ class MarketRegimeSummaryTests(unittest.TestCase):
                             "rr": 2.18,
                         },
                     },
+                    "volatility_expansion": {
+                        "strategy": "VOLATILITY_EXPANSION",
+                        "status": "WATCH_ONLY",
+                        "score": 86,
+                        "threshold": 80,
+                        "side": "LONG",
+                        "plan": {
+                            "order_type": "Limit",
+                            "entry": 101.1,
+                            "stop_loss": 99.8,
+                            "target": 103.3,
+                            "rr": 1.69,
+                        },
+                    },
                     "decision": {"decision": "NO_ACTION"},
                 },
                 {
@@ -63,6 +77,7 @@ class MarketRegimeSummaryTests(unittest.TestCase):
                         },
                     },
                     "trend_pullback": {"status": "DISABLED"},
+                    "volatility_expansion": {"status": "DISABLED"},
                     "decision": {
                         "decision": "WATCH_ONLY",
                         "selected_strategy": "BREAKOUT",
@@ -86,10 +101,12 @@ class MarketRegimeSummaryTests(unittest.TestCase):
         self.assertEqual(summary["regime_counts"]["TRENDING"], 1)
         self.assertEqual(summary["breakout_watch_total"], 1)
         self.assertEqual(summary["trend_pullback_watch_total"], 1)
+        self.assertEqual(summary["volatility_expansion_watch_total"], 1)
         self.assertEqual(summary["coordinator_watch_total"], 1)
         self.assertEqual(summary["recommendation"]["status"], "REVIEW_COORDINATED_WATCHES")
         self.assertEqual(summary["top_breakout_watches"][0]["symbol"], "WIFUSDT")
         self.assertEqual(summary["top_trend_pullback_watches"][0]["symbol"], "BTCUSDT")
+        self.assertEqual(summary["top_volatility_expansion_watches"][0]["symbol"], "BTCUSDT")
 
     def test_loads_progress_jsonl_payload(self):
         with tempfile.TemporaryDirectory() as tmpdir:

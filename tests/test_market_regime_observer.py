@@ -175,6 +175,18 @@ class MarketRegimeObserverTests(unittest.TestCase):
                 "trade_posture": "NO_TRADE",
                 "reason": "no_high_quality_trend_range_or_compression",
                 "metrics": self._base_metrics(upper_touches=1, lower_touches=1),
+                "volatility_expansion": {
+                    "strategy": "VOLATILITY_EXPANSION",
+                    "status": "WATCH_ONLY",
+                    "score": 86,
+                    "threshold": 80,
+                    "side": "SHORT",
+                    "order_type": "Limit",
+                    "entry": 99.8,
+                    "stop_loss": 101.0,
+                    "target": 97.8,
+                    "rr": 1.6667,
+                },
             },
         ]
 
@@ -185,7 +197,9 @@ class MarketRegimeObserverTests(unittest.TestCase):
         self.assertEqual(summary["range_edge_watch_total"], 1)
         self.assertEqual(summary["regime_counts"][REGIME_CHOP], 1)
         self.assertEqual(summary["trend_pullback_watch_total"], 1)
+        self.assertEqual(summary["volatility_expansion_watch_total"], 1)
         self.assertEqual(summary["trend_pullback_status_counts"]["WATCH_ONLY"], 1)
+        self.assertEqual(summary["volatility_expansion_status_counts"]["WATCH_ONLY"], 1)
         self.assertEqual(compact["setup"]["side"], "SHORT")
 
     def test_summarize_cycles_counts_trend_pullback_watch_cycles(self):
@@ -216,6 +230,35 @@ class MarketRegimeObserverTests(unittest.TestCase):
 
         self.assertEqual(summary["trend_pullback_watch_total"], 1)
         self.assertEqual(summary["cycles_with_trend_pullback_watch"], 1)
+
+    def test_summarize_cycles_counts_volatility_expansion_watch_cycles(self):
+        cycles = [
+            {
+                "cycle": 1,
+                "results": [
+                    {
+                        "symbol": "BTCUSDT",
+                        "status": "NO_TRADE",
+                        "regime": REGIME_CHOP,
+                        "confidence": 64,
+                        "trade_posture": "NO_TRADE",
+                        "volatility_expansion": {
+                            "strategy": "VOLATILITY_EXPANSION",
+                            "status": "WATCH_ONLY",
+                            "score": 86,
+                            "threshold": 80,
+                            "side": "LONG",
+                        },
+                    }
+                ],
+                "summary": {"volatility_expansion_watch_total": 1},
+            }
+        ]
+
+        summary = summarize_cycles(cycles)
+
+        self.assertEqual(summary["volatility_expansion_watch_total"], 1)
+        self.assertEqual(summary["cycles_with_volatility_expansion_watch"], 1)
 
     def test_writes_progress_jsonl_and_final_json_outputs(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -135,18 +135,23 @@ hold beyond the broken edge, retest, and minimum R:R before they become
 regimes. Trend pullback requires 1h trend alignment, 15m value-area
 pullback/reclaim, controlled pullback volume, 5m continuation trigger, and
 minimum R:R. It observes trend continuation without changing the existing SMC
-execution path. The coordinator can select only one watch candidate per symbol
-and emits `NO_ACTION`, `WATCH_ONLY`, or `CONFLICT_NO_ACTION`; it still cannot
-place or size an order. Long unattended observer runs can use `--progress-jsonl` to
-append one compact cycle summary after every completed cycle,
+execution path. It also runs read-only `VOLATILITY_EXPANSION` candidates across
+non-error regimes. Volatility expansion requires ATR expansion, volume expansion,
+an impulsive local range break, controlled extension, non-opposed 1h context,
+5m continuation quality, and minimum R:R. This is for finding fresh activity
+bursts without chasing already overextended candles. The coordinator can select
+only one watch candidate per symbol and emits `NO_ACTION`, `WATCH_ONLY`, or
+`CONFLICT_NO_ACTION`; it still cannot place or size an order. Long unattended
+observer runs can use `--progress-jsonl` to append one compact cycle summary
+after every completed cycle,
 `--checkpoint-output` to keep a rolling partial aggregate that survives
 interruption, and `--final-output` to write the final JSON summary when the run
 finishes. A full-cycle failure is recorded as `CYCLE_ERROR` and the observer
 continues to the next interval instead of dropping the whole overnight run.
 `summarize_market_regime_observer.py` reads either the rolling checkpoint, final
 JSON, or progress JSONL and emits a compact decision report with regime counts,
-Mean Reversion, Breakout, and Trend Pullback watch totals, coordinator
-selections, cycle errors, and the next recommended review action.
+Mean Reversion, Breakout, Trend Pullback, and Volatility Expansion watch totals,
+coordinator selections, cycle errors, and the next recommended review action.
 
 CI and security checks:
 
