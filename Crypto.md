@@ -21,6 +21,7 @@
 │   ├── filters.py
 │   ├── indicators.py
 │   ├── liquidity.py
+│   ├── market_regime.py
 │   ├── scoring.py
 │   ├── smc
 │   │   ├── __init__.py
@@ -41,6 +42,7 @@
 │   ├── pre_commit_checks.py
 │   ├── run_bybit_demo_lifecycle.py
 │   ├── run_bybit_demo_lifecycle_soak.py
+│   ├── run_market_regime_observer.py
 │   ├── run_paper_lifecycle.py
 │   ├── run_strategy_observer.py
 │   └── secret_scan.py
@@ -48,6 +50,7 @@
 │   ├── test_bybit_demo_lifecycle.py
 │   ├── test_bybit_demo_soak.py
 │   ├── test_execution_safety.py
+│   ├── test_market_regime_observer.py
 │   ├── test_paper_lifecycle.py
 │   ├── test_pre_commit_checks.py
 │   ├── test_secret_scan.py
@@ -62,6 +65,7 @@ python3 scripts/run_paper_lifecycle.py --db /tmp/cryptobot_paper_partial_lifecyc
 .venv/bin/python scripts/run_bybit_demo_lifecycle_soak.py --iterations 3 --symbol XRPUSDT --max-notional 25 --wait 20 --sleep 3
 .venv/bin/python scripts/run_strategy_observer.py --cycles 3 --sleep 60 --max-symbols 5
 .venv/bin/python scripts/run_strategy_observer.py --cycles 10 --sleep 60 --max-symbols 0 --summary-only
+.venv/bin/python scripts/run_market_regime_observer.py --cycles 10 --sleep 60 --max-symbols 0 --summary-only
 .venv/bin/python scripts/run_bybit_demo_lifecycle.py --partial-fill-probe-only --max-notional 15 --wait 8 --partial-fill-dynamic-candidates 10 --partial-fill-max-scan 100 --partial-fill-target-notional-pct 0.95
 .venv/bin/python scripts/run_bybit_demo_lifecycle.py --partial-fill-probe-only --max-notional 25 --wait 8 --partial-fill-dynamic-candidates 10 --partial-fill-max-scan 250 --partial-fill-target-notional-pct 0.95 --partial-fill-price-levels 5 --partial-fill-orderbook-depth 50 --partial-fill-poll-interval 0.1
 ```
@@ -108,6 +112,16 @@ cross multiple ask levels with `--partial-fill-price-levels`, sweeps down to
 shallower levels when deeper visible liquidity exceeds the cap, polls quickly
 after placement to catch transient partial-fill states, and exits before the
 broader lifecycle.
+
+`run_market_regime_observer.py` is also read-only and exists to prevent the bot
+from becoming a low-quality "trade anything" system. It classifies each symbol
+as `TRENDING`, `RANGE`, `LOW_VOL_COMPRESSION`, `CHOP`, or `DATA_ERROR`. Trend
+regimes stay assigned to the existing SMC engine. Range regimes only produce
+`RANGE_EDGE_WATCH` near confirmed range edges; mid-range prices are explicitly
+`RANGE_MID_NO_TRADE`. Low-volatility compression produces `WAIT_BREAKOUT` and
+requires range break, volume expansion, and retest before any future execution
+logic should be considered. The script never imports the executor and never
+places orders.
 
 CI and security checks:
 
