@@ -75,6 +75,10 @@ python3 scripts/run_paper_lifecycle.py --db /tmp/cryptobot_paper_partial_lifecyc
 Guarded `main.py` demo launch:
 
 ```bash
+# Full main.py observation without new order submission:
+EXECUTION_ENABLED=false MULTI_STRATEGY_READ_ONLY=true BYBIT_DEMO=true BYBIT_TESTNET=false .venv/bin/python main.py
+
+# Guarded demo trading with runtime/order caps:
 BYBIT_DEMO=true BYBIT_TESTNET=false .venv/bin/python main.py
 MULTI_STRATEGY_READ_ONLY=true BYBIT_DEMO=true BYBIT_TESTNET=false .venv/bin/python main.py
 ```
@@ -85,8 +89,10 @@ The default runtime guard allows only one new entry per run, one new entry per
 cycle, a 25 USDT max order notional, and a 30 minute process runtime while
 active position management remains enabled during the run. The global drawdown
 breaker stops the process when equity falls through
-`max_drawdown_limit_pct`. `start.sh` uses the existing `.venv`, defaults to demo
-mode, and does not restart the bot unless `MAX_RESTARTS` is set.
+`max_drawdown_limit_pct`. Set `EXECUTION_ENABLED=false` for full `main.py`
+market observation without new order submission; active position management and
+read-only strategy telemetry still run. `start.sh` uses the existing `.venv`,
+defaults to demo mode, and does not restart the bot unless `MAX_RESTARTS` is set.
 
 `run_bybit_demo_lifecycle.py` fails closed unless `BYBIT_DEMO=true` or
 `BYBIT_TESTNET=true`. It covers safe create/amend/cancel, expected retCode

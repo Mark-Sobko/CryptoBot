@@ -86,6 +86,7 @@ class InstitutionalBot:
         self.max_orders_per_cycle = int(global_cfg.get("max_orders_per_cycle", 0) or 0)
         self.max_order_notional_usd = float(global_cfg.get("max_order_notional_usd", 0) or 0)
         self.max_drawdown_limit_pct = float(global_cfg.get("max_drawdown_limit_pct", 0) or 0)
+        self.execution_enabled = bool(global_cfg.get("execution_enabled", True))
         self.require_m5_confirmation = bool(global_cfg.get("require_m5_confirmation", True))
         self.require_pd_alignment = bool(global_cfg.get("require_pd_alignment", True))
         self.require_liquidity_target = bool(global_cfg.get("require_liquidity_target", True))
@@ -140,6 +141,12 @@ class InstitutionalBot:
         )
 
     def _execution_guard_allows_new_order(self, symbol: str) -> bool:
+        if not self.execution_enabled:
+            self.logger.info(
+                f"🛑 [EXECUTION DISABLED] {symbol} signal observed; order submission skipped"
+            )
+            return False
+
         if self._run_order_limit_reached():
             self.logger.warning(
                 f"🛑 [ORDER GUARD] {symbol} skipped: max_orders_per_run="

@@ -136,6 +136,7 @@ RISK_MANAGEMENT: Final[Dict[str, Any]] = {
     },
     "global": {
         "allow_live_trading": _env_bool("ALLOW_LIVE_TRADING", False),
+        "execution_enabled": _env_bool("EXECUTION_ENABLED", True),
         "max_runtime_minutes": _env_float("MAX_RUNTIME_MINUTES", 30.0),
         "max_orders_per_run": _env_int("MAX_ORDERS_PER_RUN", 1),
         "max_orders_per_cycle": _env_int("MAX_ORDERS_PER_CYCLE", 1),
@@ -265,6 +266,7 @@ def _validate_config() -> None:
         "require_pd_alignment",
         "require_liquidity_target",
         "multi_strategy_read_only",
+        "execution_enabled",
     ]
     for key in boolean_flags:
         if not isinstance(global_cfg.get(key, True), bool):

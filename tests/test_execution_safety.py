@@ -729,6 +729,7 @@ class ExecutionSafetyTests(unittest.TestCase):
 
         bot = InstitutionalBot.__new__(InstitutionalBot)
         bot.logger = logging.getLogger("test.InstitutionalBot")
+        bot.execution_enabled = True
         bot.max_orders_per_run = 1
         bot.max_orders_per_cycle = 1
         bot.orders_submitted_this_run = 1
@@ -744,6 +745,19 @@ class ExecutionSafetyTests(unittest.TestCase):
         bot.orders_submitted_this_cycle = 0
 
         self.assertTrue(bot._execution_guard_allows_new_order("SOLUSDT"))
+
+    def test_main_execution_enabled_guard_blocks_new_orders(self):
+        InstitutionalBot = self._import_institutional_bot()
+
+        bot = InstitutionalBot.__new__(InstitutionalBot)
+        bot.logger = logging.getLogger("test.InstitutionalBot")
+        bot.execution_enabled = False
+        bot.max_orders_per_run = 0
+        bot.max_orders_per_cycle = 0
+        bot.orders_submitted_this_run = 0
+        bot.orders_submitted_this_cycle = 0
+
+        self.assertFalse(bot._execution_guard_allows_new_order("BTCUSDT"))
 
     def test_main_entry_quality_gate_reports_missing_checks(self):
         InstitutionalBot = self._import_institutional_bot()
