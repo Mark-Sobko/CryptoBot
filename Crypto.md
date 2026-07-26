@@ -125,6 +125,10 @@ places orders. It now also runs a read-only `MEAN_REVERSION` candidate detector
 for `RANGE_EDGE_WATCH` setups and a read-only strategy coordinator. Mean
 reversion candidates require edge touch, reclaim back inside the range, rejection
 from the edge, controlled trigger volume, and minimum R:R before they become
+`WATCH_ONLY`. It also runs a read-only `BREAKOUT` candidate detector for
+`LOW_VOL_COMPRESSION` setups. Breakout candidates require a close outside the
+compression range, volume expansion, impulse body quality, controlled extension,
+hold beyond the broken edge, retest, and minimum R:R before they become
 `WATCH_ONLY`. The coordinator can select only one watch candidate per symbol and
 emits `NO_ACTION`, `WATCH_ONLY`, or `CONFLICT_NO_ACTION`; it still cannot place
 or size an order.
