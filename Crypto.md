@@ -121,7 +121,13 @@ regimes stay assigned to the existing SMC engine. Range regimes only produce
 `RANGE_MID_NO_TRADE`. Low-volatility compression produces `WAIT_BREAKOUT` and
 requires range break, volume expansion, and retest before any future execution
 logic should be considered. The script never imports the executor and never
-places orders.
+places orders. It now also runs a read-only `MEAN_REVERSION` candidate detector
+for `RANGE_EDGE_WATCH` setups and a read-only strategy coordinator. Mean
+reversion candidates require edge touch, reclaim back inside the range, rejection
+from the edge, controlled trigger volume, and minimum R:R before they become
+`WATCH_ONLY`. The coordinator can select only one watch candidate per symbol and
+emits `NO_ACTION`, `WATCH_ONLY`, or `CONFLICT_NO_ACTION`; it still cannot place
+or size an order.
 
 CI and security checks:
 

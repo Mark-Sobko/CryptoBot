@@ -30,6 +30,9 @@ from engine.market_regime import (
     REGIME_TRENDING,
     MarketRegimeClassifier,
 )
+from engine.strategies.mean_reversion import STATUS_WATCH_ONLY as MR_STATUS_WATCH_ONLY
+from engine.strategies.mean_reversion import MeanReversionStrategy
+from engine.strategy_coordinator import ReadOnlyStrategyCoordinator
 from scripts.run_strategy_observer import (
     parse_symbols,
     validate_market_data,
@@ -41,6 +44,64 @@ WATCH_STATUSES = {
     "RANGE_EDGE_WATCH",
     "WAIT_BREAKOUT",
 }
+
+
+def compact_mean_reversion(result: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(result, dict):
+        return None
+
+    compact = {
+        "strategy": result.get("strategy"),
+        "status": result.get("status"),
+        "score": result.get("score"),
+        "threshold": result.get("threshold"),
+        "side": result.get("side"),
+        "reason": result.get("reason"),
+        "failed_checks": result.get("failed_checks", []),
+        "read_only": True,
+        "execution_disabled": True,
+    }
+
+    if result.get("status") == MR_STATUS_WATCH_ONLY:
+        compact["plan"] = {
+            "order_type": result.get("order_type"),
+            "entry": result.get("entry"),
+            "stop_loss": result.get("stop_loss"),
+            "target": result.get("target"),
+            "rr": result.get("rr"),
+        }
+
+    checks = result.get("checks")
+    if isinstance(checks, dict):
+        compact["checks"] = {
+            "volume_ratio": checks.get("volume_ratio"),
+            "max_trigger_volume_ratio": checks.get("max_trigger_volume_ratio"),
+            "min_rr": checks.get("min_rr"),
+            "touched_edge": checks.get("touched_edge"),
+            "reclaimed_inside": checks.get("reclaimed_inside"),
+            "edge_rejection": checks.get("edge_rejection"),
+        }
+
+    return compact
+
+
+def compact_decision(decision: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(decision, dict):
+        return None
+
+    compact = {
+        "decision": decision.get("decision"),
+        "selected_strategy": decision.get("selected_strategy"),
+        "side": decision.get("side"),
+        "score": decision.get("score"),
+        "threshold": decision.get("threshold"),
+        "reason": decision.get("reason"),
+        "read_only": True,
+        "execution_disabled": True,
+    }
+    if isinstance(decision.get("plan"), dict):
+        compact["plan"] = decision["plan"]
+    return compact
 
 
 def compact_result(result: dict[str, Any]) -> dict[str, Any]:
@@ -72,6 +133,14 @@ def compact_result(result: dict[str, Any]) -> dict[str, Any]:
     if isinstance(setup, dict):
         compact["setup"] = setup
 
+    mean_reversion = compact_mean_reversion(result.get("mean_reversion"))
+    if mean_reversion:
+        compact["mean_reversion"] = mean_reversion
+
+    decision = compact_decision(result.get("decision"))
+    if decision:
+        compact["decision"] = decision
+
     return compact
 
 
@@ -79,6 +148,14 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
     regime_counts = Counter(str(result.get("regime", "UNKNOWN")) for result in results)
     posture_counts = Counter(str(result.get("trade_posture", "UNKNOWN")) for result in results)
     status_counts = Counter(str(result.get("status", "UNKNOWN")) for result in results)
+    mean_reversion_status_counts = Counter(
+        str((result.get("mean_reversion") or {}).get("status", "UNKNOWN"))
+        for result in results
+    )
+    coordinator_decision_counts = Counter(
+        str((result.get("decision") or {}).get("decision", "UNKNOWN"))
+        for result in results
+    )
 
     watches = [
         compact_result(result)
@@ -88,6 +165,11 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
     range_watches = [item for item in watches if item.get("regime") == REGIME_RANGE]
     compression_watches = [
         item for item in watches if item.get("regime") == REGIME_LOW_VOL_COMPRESSION
+    ]
+    mean_reversion_watches = [
+        compact_result(result)
+        for result in results
+        if (result.get("mean_reversion") or {}).get("status") == MR_STATUS_WATCH_ONLY
     ]
 
     high_confidence = [
@@ -109,8 +191,12 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         "watch_total": len(watches),
         "range_edge_watch_total": len(range_watches),
         "compression_watch_total": len(compression_watches),
+        "mean_reversion_watch_total": len(mean_reversion_watches),
         "range_edge_watches": range_watches[:10],
         "compression_watches": compression_watches[:10],
+        "mean_reversion_watches": mean_reversion_watches[:10],
+        "mean_reversion_status_counts": dict(sorted(mean_reversion_status_counts.items())),
+        "coordinator_decision_counts": dict(sorted(coordinator_decision_counts.items())),
         "high_confidence": high_confidence,
     }
 
@@ -128,6 +214,11 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
         for cycle in cycles
         if (cycle.get("summary") or {}).get("watch_total", 0)
     )
+    summary["cycles_with_mean_reversion_watch"] = sum(
+        1
+        for cycle in cycles
+        if (cycle.get("summary") or {}).get("mean_reversion_watch_total", 0)
+    )
     summary["errors_total"] = sum(
         1 for result in all_results if result.get("regime") == REGIME_DATA_ERROR
     )
@@ -138,6 +229,8 @@ class ReadOnlyMarketRegimeObserver:
     def __init__(self) -> None:
         self.exchange = ExchangeManager()
         self.classifier = MarketRegimeClassifier()
+        self.mean_reversion = MeanReversionStrategy()
+        self.coordinator = ReadOnlyStrategyCoordinator()
 
     def run_cycle(self, symbols: list[str]) -> dict[str, Any]:
         results: list[dict[str, Any]] = []
@@ -161,6 +254,17 @@ class ReadOnlyMarketRegimeObserver:
                     continue
 
                 analyzed = self.classifier.analyze(data)
+                mean_reversion = self.mean_reversion.analyze(
+                    symbol=symbol,
+                    regime_result=analyzed,
+                    df_15m=data.get("15m"),
+                    df_5m=data.get("5m"),
+                )
+                decision = self.coordinator.decide(
+                    symbol=symbol,
+                    regime_result=analyzed,
+                    strategy_results=[mean_reversion],
+                )
                 setup = analyzed.get("setup")
                 setup_status = (
                     setup.get("status")
@@ -172,6 +276,8 @@ class ReadOnlyMarketRegimeObserver:
                     {
                         "symbol": symbol,
                         "status": setup_status,
+                        "mean_reversion": mean_reversion,
+                        "decision": decision,
                         **analyzed,
                     }
                 )
