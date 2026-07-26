@@ -151,7 +151,8 @@ continues to the next interval instead of dropping the whole overnight run.
 `summarize_market_regime_observer.py` reads either the rolling checkpoint, final
 JSON, or progress JSONL and emits a compact decision report with regime counts,
 Mean Reversion, Breakout, Trend Pullback, and Volatility Expansion watch totals,
-coordinator selections, cycle errors, and the next recommended review action.
+coordinator selections, strategy failed-check/reason aggregates, top repeated
+symbol/status blockers, cycle errors, and the next recommended review action.
 
 CI and security checks:
 

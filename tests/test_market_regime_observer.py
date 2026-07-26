@@ -260,6 +260,47 @@ class MarketRegimeObserverTests(unittest.TestCase):
         self.assertEqual(summary["volatility_expansion_watch_total"], 1)
         self.assertEqual(summary["cycles_with_volatility_expansion_watch"], 1)
 
+    def test_summary_reports_strategy_blockers_and_symbol_statuses(self):
+        results = [
+            {
+                "symbol": "SEIUSDT",
+                "status": "WAIT_BREAKOUT",
+                "regime": REGIME_LOW_VOL_COMPRESSION,
+                "confidence": 42,
+                "trade_posture": "WAIT_BREAKOUT",
+                "breakout": {
+                    "strategy": "BREAKOUT",
+                    "status": "WAIT_BREAKOUT",
+                    "failed_checks": ["range_break"],
+                    "reason": "waiting_for_close_outside_compression_range",
+                },
+                "volatility_expansion": {
+                    "strategy": "VOLATILITY_EXPANSION",
+                    "status": "WAIT_EXPANSION",
+                    "failed_checks": ["volume_expansion", "impulse_body"],
+                    "reason": "waiting_for_clean_volatility_expansion",
+                },
+            }
+        ]
+
+        summary = summarize_results(results)
+
+        self.assertEqual(summary["strategy_failed_check_counts"]["breakout"]["range_break"], 1)
+        self.assertEqual(summary["strategy_failed_check_counts"]["volatility_expansion"]["impulse_body"], 1)
+        self.assertEqual(
+            summary["strategy_reason_counts"]["breakout"]["waiting_for_close_outside_compression_range"],
+            1,
+        )
+        self.assertEqual(
+            summary["top_strategy_symbol_statuses"][0],
+            {
+                "strategy": "breakout",
+                "symbol": "SEIUSDT",
+                "status": "WAIT_BREAKOUT",
+                "count": 1,
+            },
+        )
+
     def test_writes_progress_jsonl_and_final_json_outputs(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             progress_path = Path(tmpdir) / "nested" / "progress.jsonl"

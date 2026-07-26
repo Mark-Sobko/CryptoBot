@@ -50,6 +50,13 @@ WATCH_STATUSES = {
     "RANGE_EDGE_WATCH",
     "WAIT_BREAKOUT",
 }
+STRATEGY_KEYS = (
+    "mean_reversion",
+    "breakout",
+    "trend_pullback",
+    "volatility_expansion",
+)
+NON_ACTIONABLE_STRATEGY_STATUSES = {"DISABLED", "UNKNOWN", "None", ""}
 RUN_STATUS_OK = "OK"
 RUN_STATUS_COMPLETED_WITH_ERRORS = "COMPLETED_WITH_ERRORS"
 RUN_STATUS_INTERRUPTED = "INTERRUPTED"
@@ -305,6 +312,76 @@ def compact_result(result: dict[str, Any]) -> dict[str, Any]:
     return compact
 
 
+def _sorted_counter(counter: Counter) -> dict[str, int]:
+    return {
+        str(key): int(value)
+        for key, value in sorted(counter.items(), key=lambda item: (str(item[0]), item[1]))
+    }
+
+
+def summarize_strategy_blockers(results: list[dict[str, Any]], *, top: int = 10) -> dict[str, Any]:
+    failed_checks: dict[str, Counter] = {strategy: Counter() for strategy in STRATEGY_KEYS}
+    reasons: dict[str, Counter] = {strategy: Counter() for strategy in STRATEGY_KEYS}
+    actionable_symbol_statuses: Counter[tuple[str, str, str]] = Counter()
+    regime_symbol_statuses: Counter[tuple[str, str, str]] = Counter()
+
+    for result in results:
+        symbol = str(result.get("symbol", "UNKNOWN"))
+        regime_symbol_statuses[
+            (
+                symbol,
+                str(result.get("regime", "UNKNOWN")),
+                str(result.get("status", "UNKNOWN")),
+            )
+        ] += 1
+
+        for strategy_key in STRATEGY_KEYS:
+            strategy = result.get(strategy_key)
+            if not isinstance(strategy, dict):
+                continue
+
+            status = str(strategy.get("status", "UNKNOWN"))
+            reason = str(strategy.get("reason", ""))
+            if reason and status not in NON_ACTIONABLE_STRATEGY_STATUSES:
+                reasons[strategy_key][reason] += 1
+
+            failed = strategy.get("failed_checks")
+            if isinstance(failed, list) and status not in NON_ACTIONABLE_STRATEGY_STATUSES:
+                failed_checks[strategy_key].update(str(item) for item in failed)
+
+            if status not in NON_ACTIONABLE_STRATEGY_STATUSES:
+                actionable_symbol_statuses[(strategy_key, symbol, status)] += 1
+
+    return {
+        "strategy_failed_check_counts": {
+            strategy: _sorted_counter(counter)
+            for strategy, counter in failed_checks.items()
+        },
+        "strategy_reason_counts": {
+            strategy: _sorted_counter(counter)
+            for strategy, counter in reasons.items()
+        },
+        "top_strategy_symbol_statuses": [
+            {
+                "strategy": strategy,
+                "symbol": symbol,
+                "status": status,
+                "count": int(count),
+            }
+            for (strategy, symbol, status), count in actionable_symbol_statuses.most_common(top)
+        ],
+        "top_regime_symbol_statuses": [
+            {
+                "symbol": symbol,
+                "regime": regime,
+                "status": status,
+                "count": int(count),
+            }
+            for (symbol, regime, status), count in regime_symbol_statuses.most_common(top)
+        ],
+    }
+
+
 def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
     regime_counts = Counter(str(result.get("regime", "UNKNOWN")) for result in results)
     posture_counts = Counter(str(result.get("trade_posture", "UNKNOWN")) for result in results)
@@ -395,6 +472,7 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         "volatility_expansion_status_counts": dict(sorted(volatility_expansion_status_counts.items())),
         "coordinator_decision_counts": dict(sorted(coordinator_decision_counts.items())),
         "high_confidence": high_confidence,
+        **summarize_strategy_blockers(results, top=10),
     }
 
 
