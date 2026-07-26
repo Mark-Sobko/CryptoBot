@@ -105,8 +105,15 @@ def compact_watch(result: dict[str, Any], strategy_key: str | None = None) -> di
             "side": decision.get("side"),
             "score": decision.get("score"),
             "reason": decision.get("reason"),
+            "candidate_count": decision.get("candidate_count"),
+            "candidate_strategies": decision.get("candidate_strategies"),
+            "rejected_candidate_count": decision.get("rejected_candidate_count"),
             "plan": decision.get("plan"),
         }
+        if isinstance(decision.get("candidate_sides"), list):
+            compact["decision"]["candidate_sides"] = decision["candidate_sides"]
+        if isinstance(decision.get("rejected_candidates"), list) and decision["rejected_candidates"]:
+            compact["decision"]["rejected_candidates"] = decision["rejected_candidates"][:4]
     return compact
 
 
@@ -207,6 +214,10 @@ def summarize_payload(payload: dict[str, Any], *, top: int = 10) -> dict[str, An
         str((result.get("decision") or {}).get("decision", "UNKNOWN"))
         for result in results
     )
+    decision_reason_counts = Counter(
+        str((result.get("decision") or {}).get("reason", "UNKNOWN"))
+        for result in results
+    )
 
     regime_watches = [
         compact_watch(result)
@@ -259,6 +270,7 @@ def summarize_payload(payload: dict[str, Any], *, top: int = 10) -> dict[str, An
         "trend_pullback_status_counts": dict(sorted(trend_pullback_counts.items())),
         "volatility_expansion_status_counts": dict(sorted(volatility_expansion_counts.items())),
         "coordinator_decision_counts": dict(sorted(decision_counts.items())),
+        "coordinator_reason_counts": dict(sorted(decision_reason_counts.items())),
         "watch_total": len(regime_watches),
         "mean_reversion_watch_total": len(mean_reversion_watches),
         "breakout_watch_total": len(breakout_watches),

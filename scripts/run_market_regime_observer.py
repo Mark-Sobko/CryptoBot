@@ -252,9 +252,17 @@ def compact_decision(decision: dict[str, Any] | None) -> dict[str, Any] | None:
         "score": decision.get("score"),
         "threshold": decision.get("threshold"),
         "reason": decision.get("reason"),
+        "candidate_count": decision.get("candidate_count"),
+        "candidate_strategies": decision.get("candidate_strategies"),
+        "strategy_priority": decision.get("strategy_priority"),
+        "rejected_candidate_count": decision.get("rejected_candidate_count"),
         "read_only": True,
         "execution_disabled": True,
     }
+    if isinstance(decision.get("candidate_sides"), list):
+        compact["candidate_sides"] = decision["candidate_sides"]
+    if isinstance(decision.get("rejected_candidates"), list) and decision["rejected_candidates"]:
+        compact["rejected_candidates"] = decision["rejected_candidates"][:4]
     if isinstance(decision.get("plan"), dict):
         compact["plan"] = decision["plan"]
     return compact
@@ -406,6 +414,10 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         str((result.get("decision") or {}).get("decision", "UNKNOWN"))
         for result in results
     )
+    coordinator_reason_counts = Counter(
+        str((result.get("decision") or {}).get("reason", "UNKNOWN"))
+        for result in results
+    )
 
     watches = [
         compact_result(result)
@@ -471,6 +483,7 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         "trend_pullback_status_counts": dict(sorted(trend_pullback_status_counts.items())),
         "volatility_expansion_status_counts": dict(sorted(volatility_expansion_status_counts.items())),
         "coordinator_decision_counts": dict(sorted(coordinator_decision_counts.items())),
+        "coordinator_reason_counts": dict(sorted(coordinator_reason_counts.items())),
         "high_confidence": high_confidence,
         **summarize_strategy_blockers(results, top=10),
     }

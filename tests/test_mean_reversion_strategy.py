@@ -240,8 +240,30 @@ class MeanReversionStrategyTests(unittest.TestCase):
             symbol="OPUSDT",
             regime_result=self._range_result(),
             strategy_results=[
-                {"strategy": "A", "status": STATUS_WATCH_ONLY, "side": "SHORT", "score": 80, "threshold": 70},
-                {"strategy": "B", "status": STATUS_WATCH_ONLY, "side": "LONG", "score": 81, "threshold": 70},
+                {
+                    "strategy": "A",
+                    "status": STATUS_WATCH_ONLY,
+                    "side": "SHORT",
+                    "score": 80,
+                    "threshold": 70,
+                    "rr": 1.5,
+                    "order_type": "Limit",
+                    "entry": 101.0,
+                    "stop_loss": 102.0,
+                    "target": 99.0,
+                },
+                {
+                    "strategy": "B",
+                    "status": STATUS_WATCH_ONLY,
+                    "side": "LONG",
+                    "score": 81,
+                    "threshold": 70,
+                    "rr": 1.6,
+                    "order_type": "Limit",
+                    "entry": 99.0,
+                    "stop_loss": 98.0,
+                    "target": 101.0,
+                },
             ],
         )
 

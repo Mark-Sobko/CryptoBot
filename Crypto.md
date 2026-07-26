@@ -141,8 +141,12 @@ an impulsive local range break, controlled extension, non-opposed 1h context,
 5m continuation quality, and minimum R:R. This is for finding fresh activity
 bursts without chasing already overextended candles. The coordinator can select
 only one watch candidate per symbol and emits `NO_ACTION`, `WATCH_ONLY`, or
-`CONFLICT_NO_ACTION`; it still cannot place or size an order. Long unattended
-observer runs can use `--progress-jsonl` to append one compact cycle summary
+`CONFLICT_NO_ACTION`; it still cannot place or size an order. Coordinator
+selection now validates each candidate plan, blocks invalid directional
+entry/stop/target layouts, rejects candidates below the coordinator minimum R:R,
+reports rejected candidate reasons, and prefers the strategy designed for the
+current regime before using score/R:R as tie-breakers. Long unattended observer
+runs can use `--progress-jsonl` to append one compact cycle summary
 after every completed cycle,
 `--checkpoint-output` to keep a rolling partial aggregate that survives
 interruption, and `--final-output` to write the final JSON summary when the run
