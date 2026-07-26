@@ -14,6 +14,7 @@ from core.executor import TradeExecutor
 from core.logger import TradeLogger
 from core.notifier import TelegramNotifier
 from core.risk_manager import RiskManager
+from core.strategy_journal import StrategyObservationJournal
 
 from engine.filters import MarketFilters
 from engine.trend_engine import TrendEngine
@@ -43,6 +44,10 @@ class InstitutionalBot:
 
         self._load_runtime_safeguards()
         self._validate_runtime_environment()
+        self.strategy_journal = StrategyObservationJournal(
+            config.STRATEGY_OBSERVATION_PATH,
+            enabled=self.strategy_observation_journal_enabled,
+        )
 
         self.db = TradeDatabase()
         self.ex = ExchangeManager()
@@ -91,6 +96,9 @@ class InstitutionalBot:
         self.require_pd_alignment = bool(global_cfg.get("require_pd_alignment", True))
         self.require_liquidity_target = bool(global_cfg.get("require_liquidity_target", True))
         self.multi_strategy_read_only = bool(global_cfg.get("multi_strategy_read_only", True))
+        self.strategy_observation_journal_enabled = bool(
+            global_cfg.get("strategy_observation_journal", True)
+        )
         self.last_drawdown_pct = 0.0
         self.orders_submitted_this_run = 0
         self.orders_submitted_this_cycle = 0
@@ -273,12 +281,54 @@ class InstitutionalBot:
                 **regime_result,
             }
             self._log_read_only_strategy_decision(symbol, result)
+            self._record_read_only_strategy_observation(symbol, result)
             return result
         except Exception as exc:
             self.logger.warning(
                 f"⚠️ [ALT READ-ONLY] {symbol} skipped: {type(exc).__name__}: {str(exc)[:160]}"
             )
             return None
+
+    def _record_read_only_strategy_observation(
+        self,
+        symbol: str,
+        strategy_result: Dict[str, Any],
+    ) -> None:
+        journal = getattr(self, "strategy_journal", None)
+        if journal is None:
+            return
+
+        decision = strategy_result.get("decision")
+        if not isinstance(decision, dict):
+            return
+
+        action = decision.get("decision")
+        rejected_count = int(decision.get("rejected_candidate_count", 0) or 0)
+        if action == DECISION_NO_ACTION and rejected_count <= 0:
+            return
+
+        payload = {
+            "source": "ALT_STRATEGY",
+            "read_only": True,
+            "execution_enabled": bool(getattr(self, "execution_enabled", True)),
+            "demo": config.BYBIT_DEMO,
+            "testnet": config.BYBIT_TESTNET,
+            "regime": strategy_result.get("regime"),
+            "regime_confidence": strategy_result.get("confidence"),
+            "decision": action,
+            "reason": decision.get("reason"),
+            "selected_strategy": decision.get("selected_strategy"),
+            "side": decision.get("side"),
+            "score": decision.get("score"),
+            "threshold": decision.get("threshold"),
+            "candidate_count": decision.get("candidate_count"),
+            "candidate_strategies": decision.get("candidate_strategies", []),
+            "candidate_sides": decision.get("candidate_sides", []),
+            "rejected_candidate_count": rejected_count,
+            "rejected_candidates": decision.get("rejected_candidates", []),
+            "plan": decision.get("plan"),
+        }
+        journal.record("ALT_STRATEGY_DECISION", symbol, payload)
 
     def _log_read_only_strategy_decision(
         self,

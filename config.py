@@ -18,6 +18,10 @@ for folder in (DATA_DIR, LOGS_DIR):
 DB_PATH: Final[str] = str(DATA_DIR / "bot_memory.db")
 LOG_PATH: Final[str] = str(LOGS_DIR / "bot_execution.log")
 HISTORY_PATH: Final[str] = str(DATA_DIR / "trade_history.json")
+_STRATEGY_OBSERVATION_PATH_ENV = os.getenv("STRATEGY_OBSERVATION_PATH", "").strip()
+STRATEGY_OBSERVATION_PATH: Final[str] = (
+    _STRATEGY_OBSERVATION_PATH_ENV or str(LOGS_DIR / "strategy_observations.jsonl")
+)
 
 # --- [SECURITY & API CONFIGURATION] ---
 API_KEY: Final[str] = os.getenv("BYBIT_API_KEY", "")
@@ -148,6 +152,7 @@ RISK_MANAGEMENT: Final[Dict[str, Any]] = {
         "require_pd_alignment": _env_bool("REQUIRE_PD_ALIGNMENT", True),
         "require_liquidity_target": _env_bool("REQUIRE_LIQUIDITY_TARGET", True),
         "multi_strategy_read_only": _env_bool("MULTI_STRATEGY_READ_ONLY", True),
+        "strategy_observation_journal": _env_bool("STRATEGY_OBSERVATION_JOURNAL", True),
         "leverage": 10,
         "margin_type": "ISOLATED",
         "retry_attempts": 3,
@@ -267,6 +272,7 @@ def _validate_config() -> None:
         "require_liquidity_target",
         "multi_strategy_read_only",
         "execution_enabled",
+        "strategy_observation_journal",
     ]
     for key in boolean_flags:
         if not isinstance(global_cfg.get(key, True), bool):

@@ -845,6 +845,7 @@ class ExecutionSafetyTests(unittest.TestCase):
         bot.volatility_expansion_strategy.analyze.return_value = volatility_expansion
         bot.read_only_strategy_coordinator = mock.Mock()
         bot.read_only_strategy_coordinator.decide.return_value = decision
+        bot.strategy_journal = mock.Mock()
 
         data = {"1h": object(), "15m": object(), "5m": object()}
         result = bot._analyze_read_only_strategies("BTCUSDT", data)
@@ -858,6 +859,53 @@ class ExecutionSafetyTests(unittest.TestCase):
             df_5m=data["5m"],
         )
         bot.read_only_strategy_coordinator.decide.assert_called_once()
+        bot.strategy_journal.record.assert_not_called()
+
+    def test_main_records_read_only_strategy_observation_for_watch(self):
+        import config
+        InstitutionalBot = self._import_institutional_bot()
+
+        bot = InstitutionalBot.__new__(InstitutionalBot)
+        bot.execution_enabled = False
+        bot.strategy_journal = mock.Mock()
+
+        with (
+            mock.patch.object(config, "BYBIT_DEMO", True),
+            mock.patch.object(config, "BYBIT_TESTNET", False),
+        ):
+            bot._record_read_only_strategy_observation(
+                "WIFUSDT",
+                {
+                    "regime": "RANGE",
+                    "confidence": 72.5,
+                    "decision": {
+                        "decision": "WATCH_ONLY",
+                        "reason": "single_read_only_candidate",
+                        "selected_strategy": "MEAN_REVERSION",
+                        "side": "SHORT",
+                        "score": 85,
+                        "threshold": 55,
+                        "candidate_count": 1,
+                        "candidate_strategies": ["MEAN_REVERSION"],
+                        "plan": {
+                            "order_type": "Limit",
+                            "entry": 0.154,
+                            "stop_loss": 0.156,
+                            "target": 0.148,
+                            "rr": 3.0,
+                        },
+                    },
+                },
+            )
+
+        event_type, symbol, payload = bot.strategy_journal.record.call_args.args
+        self.assertEqual(event_type, "ALT_STRATEGY_DECISION")
+        self.assertEqual(symbol, "WIFUSDT")
+        self.assertEqual(payload["decision"], "WATCH_ONLY")
+        self.assertEqual(payload["selected_strategy"], "MEAN_REVERSION")
+        self.assertFalse(payload["execution_enabled"])
+        self.assertTrue(payload["demo"])
+        self.assertEqual(payload["plan"]["rr"], 3.0)
 
     def test_main_read_only_strategy_summary_reports_actionable_states(self):
         InstitutionalBot = self._import_institutional_bot()

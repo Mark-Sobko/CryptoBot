@@ -13,6 +13,7 @@
 │   ├── paper_trading.py
 │   ├── position_manager.py
 │   ├── risk_manager.py
+│   ├── strategy_journal.py
 │   └── tp_manager.py
 ├── data
 │   └── runtime SQLite/JSONL files (ignored by git)
@@ -45,7 +46,8 @@
 │   ├── run_market_regime_observer.py
 │   ├── run_paper_lifecycle.py
 │   ├── run_strategy_observer.py
-│   └── secret_scan.py
+│   ├── secret_scan.py
+│   └── summarize_strategy_journal.py
 ├── tests
 │   ├── test_bybit_demo_lifecycle.py
 │   ├── test_bybit_demo_soak.py
@@ -54,6 +56,7 @@
 │   ├── test_paper_lifecycle.py
 │   ├── test_pre_commit_checks.py
 │   ├── test_secret_scan.py
+│   ├── test_strategy_journal.py
 │   └── test_strategy_observer.py
 
 Safe lifecycle checks:
@@ -68,6 +71,7 @@ python3 scripts/run_paper_lifecycle.py --db /tmp/cryptobot_paper_partial_lifecyc
 .venv/bin/python scripts/run_market_regime_observer.py --cycles 10 --sleep 60 --max-symbols 0 --summary-only
 .venv/bin/python scripts/run_market_regime_observer.py --cycles 288 --sleep 300 --max-symbols 0 --summary-only --progress-jsonl /tmp/cryptobot_regime_progress.jsonl --checkpoint-output /tmp/cryptobot_regime_checkpoint.json --final-output /tmp/cryptobot_regime_final.json
 .venv/bin/python scripts/summarize_market_regime_observer.py /tmp/cryptobot_regime_checkpoint.json --top 10
+.venv/bin/python scripts/summarize_strategy_journal.py logs/strategy_observations.jsonl --top 10
 .venv/bin/python scripts/run_bybit_demo_lifecycle.py --partial-fill-probe-only --max-notional 15 --wait 8 --partial-fill-dynamic-candidates 10 --partial-fill-max-scan 100 --partial-fill-target-notional-pct 0.95
 .venv/bin/python scripts/run_bybit_demo_lifecycle.py --partial-fill-probe-only --max-notional 25 --wait 8 --partial-fill-dynamic-candidates 10 --partial-fill-max-scan 250 --partial-fill-target-notional-pct 0.95 --partial-fill-price-levels 5 --partial-fill-orderbook-depth 50 --partial-fill-poll-interval 0.1
 ```
@@ -91,7 +95,9 @@ active position management remains enabled during the run. The global drawdown
 breaker stops the process when equity falls through
 `max_drawdown_limit_pct`. Set `EXECUTION_ENABLED=false` for full `main.py`
 market observation without new order submission; active position management and
-read-only strategy telemetry still run. `start.sh` uses the existing `.venv`,
+read-only strategy telemetry still run. Significant alternative-strategy
+decisions are written to `logs/strategy_observations.jsonl`; summarize them with
+`scripts/summarize_strategy_journal.py`. `start.sh` uses the existing `.venv`,
 defaults to demo mode, and does not restart the bot unless `MAX_RESTARTS` is set.
 
 `run_bybit_demo_lifecycle.py` fails closed unless `BYBIT_DEMO=true` or
