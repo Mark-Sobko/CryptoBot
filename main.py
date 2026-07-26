@@ -23,6 +23,17 @@ from engine.scoring import ScoringSystem
 from engine.indicators import ConfirmationModule
 from engine.stats_analyzer import StatsAnalyzer
 from engine.news_filter import NewsFilter
+from engine.market_regime import MarketRegimeClassifier
+from engine.strategies.mean_reversion import MeanReversionStrategy
+from engine.strategies.breakout import BreakoutStrategy
+from engine.strategies.trend_pullback import TrendPullbackStrategy
+from engine.strategies.volatility_expansion import VolatilityExpansionStrategy
+from engine.strategy_coordinator import (
+    DECISION_CONFLICT,
+    DECISION_NO_ACTION,
+    DECISION_WATCH_ONLY,
+    ReadOnlyStrategyCoordinator,
+)
 
 
 class InstitutionalBot:
@@ -51,6 +62,12 @@ class InstitutionalBot:
         self.scoring = ScoringSystem()
         self.confirmation = ConfirmationModule()
         self.stats_analyzer = StatsAnalyzer(config.DB_PATH, initial_balance=initial_balance)
+        self.regime_classifier = MarketRegimeClassifier()
+        self.mean_reversion_strategy = MeanReversionStrategy()
+        self.breakout_strategy = BreakoutStrategy()
+        self.trend_pullback_strategy = TrendPullbackStrategy()
+        self.volatility_expansion_strategy = VolatilityExpansionStrategy()
+        self.read_only_strategy_coordinator = ReadOnlyStrategyCoordinator()
 
         self.is_running = True
         self.last_breaker_time: Optional[datetime.datetime] = None
@@ -72,6 +89,7 @@ class InstitutionalBot:
         self.require_m5_confirmation = bool(global_cfg.get("require_m5_confirmation", True))
         self.require_pd_alignment = bool(global_cfg.get("require_pd_alignment", True))
         self.require_liquidity_target = bool(global_cfg.get("require_liquidity_target", True))
+        self.multi_strategy_read_only = bool(global_cfg.get("multi_strategy_read_only", True))
         self.last_drawdown_pct = 0.0
         self.orders_submitted_this_run = 0
         self.orders_submitted_this_cycle = 0
@@ -190,6 +208,156 @@ class InstitutionalBot:
             missing.append("liquidity_target")
 
         return missing
+
+    def _analyze_read_only_strategies(
+        self,
+        symbol: str,
+        data: Dict[str, pd.DataFrame],
+    ) -> Optional[Dict[str, Any]]:
+        if not self.multi_strategy_read_only:
+            return None
+
+        try:
+            regime_result = self.regime_classifier.analyze(data)
+            mean_reversion = self.mean_reversion_strategy.analyze(
+                symbol=symbol,
+                regime_result=regime_result,
+                df_15m=data.get("15m"),
+                df_5m=data.get("5m"),
+            )
+            breakout = self.breakout_strategy.analyze(
+                symbol=symbol,
+                regime_result=regime_result,
+                df_15m=data.get("15m"),
+                df_5m=data.get("5m"),
+            )
+            trend_pullback = self.trend_pullback_strategy.analyze(
+                symbol=symbol,
+                regime_result=regime_result,
+                df_1h=data.get("1h"),
+                df_15m=data.get("15m"),
+                df_5m=data.get("5m"),
+            )
+            volatility_expansion = self.volatility_expansion_strategy.analyze(
+                symbol=symbol,
+                regime_result=regime_result,
+                df_1h=data.get("1h"),
+                df_15m=data.get("15m"),
+                df_5m=data.get("5m"),
+            )
+            decision = self.read_only_strategy_coordinator.decide(
+                symbol=symbol,
+                regime_result=regime_result,
+                strategy_results=[
+                    mean_reversion,
+                    breakout,
+                    trend_pullback,
+                    volatility_expansion,
+                ],
+            )
+
+            result = {
+                "symbol": symbol,
+                "mean_reversion": mean_reversion,
+                "breakout": breakout,
+                "trend_pullback": trend_pullback,
+                "volatility_expansion": volatility_expansion,
+                "decision": decision,
+                **regime_result,
+            }
+            self._log_read_only_strategy_decision(symbol, result)
+            return result
+        except Exception as exc:
+            self.logger.warning(
+                f"⚠️ [ALT READ-ONLY] {symbol} skipped: {type(exc).__name__}: {str(exc)[:160]}"
+            )
+            return None
+
+    def _log_read_only_strategy_decision(
+        self,
+        symbol: str,
+        strategy_result: Dict[str, Any],
+    ) -> None:
+        decision = strategy_result.get("decision")
+        if not isinstance(decision, dict):
+            return
+
+        action = decision.get("decision")
+        reason = str(decision.get("reason", ""))
+        if action == DECISION_NO_ACTION and reason == "no_strategy_candidate":
+            return
+
+        if action == DECISION_WATCH_ONLY:
+            plan = decision.get("plan") if isinstance(decision.get("plan"), dict) else {}
+            self.logger.info(
+                f"🧭 [ALT WATCH READ-ONLY] {symbol} | "
+                f"regime={strategy_result.get('regime')} | "
+                f"strategy={decision.get('selected_strategy')} | side={decision.get('side')} | "
+                f"score={decision.get('score')}/{decision.get('threshold')} | "
+                f"entry={plan.get('entry')} | sl={plan.get('stop_loss')} | "
+                f"target={plan.get('target')} | rr={plan.get('rr')}"
+            )
+            return
+
+        if action == DECISION_CONFLICT:
+            self.logger.warning(
+                f"⚠️ [ALT CONFLICT READ-ONLY] {symbol} | "
+                f"regime={strategy_result.get('regime')} | "
+                f"sides={decision.get('candidate_sides')} | "
+                f"strategies={decision.get('candidate_strategies')}"
+            )
+            return
+
+        if action == DECISION_NO_ACTION and int(decision.get("rejected_candidate_count", 0) or 0) > 0:
+            self.logger.info(
+                f"⏳ [ALT REJECT READ-ONLY] {symbol} | "
+                f"regime={strategy_result.get('regime')} | reason={reason} | "
+                f"rejected={decision.get('rejected_candidates')}"
+            )
+
+    @staticmethod
+    def _build_read_only_strategy_summary(
+        symbol: str,
+        strategy_result: Optional[Dict[str, Any]],
+        *,
+        rel_vol: float = 0.0,
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(strategy_result, dict):
+            return None
+
+        decision = strategy_result.get("decision")
+        if not isinstance(decision, dict):
+            return None
+
+        action = decision.get("decision")
+        if action == DECISION_WATCH_ONLY:
+            return {
+                "symbol": symbol,
+                "status": "ALT_WATCH",
+                "side": decision.get("side"),
+                "score": decision.get("score"),
+                "reason": f"{decision.get('selected_strategy')} read-only candidate",
+                "rel_vol": rel_vol,
+            }
+
+        if action == DECISION_CONFLICT:
+            strategies = ",".join(str(item) for item in decision.get("candidate_strategies", []))
+            return {
+                "symbol": symbol,
+                "status": "ALT_CONFLICT",
+                "reason": f"read-only conflict:{strategies}",
+                "rel_vol": rel_vol,
+            }
+
+        if action == DECISION_NO_ACTION and int(decision.get("rejected_candidate_count", 0) or 0) > 0:
+            return {
+                "symbol": symbol,
+                "status": "ALT_REJECT",
+                "reason": "read-only candidate rejected by coordinator",
+                "rel_vol": rel_vol,
+            }
+
+        return None
 
     def _drawdown_limit_reached(self, current_balance: float) -> bool:
         if self.max_drawdown_limit_pct <= 0:
@@ -349,26 +517,43 @@ class InstitutionalBot:
                 if not self._validate_market_data(symbol, data):
                     continue
 
+                read_only_strategy_result = self._analyze_read_only_strategies(symbol, data)
                 trend = TrendEngine.get_direction(data["1h"], data["15m"])
 
                 if not self.filters.is_market_suitable(data["1h"]):
                     rel_vol = getattr(self.filters, "last_rel_vol", 0.0)
-                    summary_list.append({
-                        "symbol": symbol,
-                        "status": "REJECT",
-                        "reason": "Низкий объем/Шум",
-                        "rel_vol": rel_vol,
-                    })
+                    read_only_summary = self._build_read_only_strategy_summary(
+                        symbol,
+                        read_only_strategy_result,
+                        rel_vol=rel_vol,
+                    )
+                    summary_list.append(
+                        read_only_summary
+                        or {
+                            "symbol": symbol,
+                            "status": "REJECT",
+                            "reason": "Низкий объем/Шум",
+                            "rel_vol": rel_vol,
+                        }
+                    )
                     continue
                 
                 rel_vol = getattr(self.filters, "last_rel_vol", 0.0)
 
                 if trend == "FLAT":
-                    summary_list.append({
-                        "symbol": symbol,
-                        "status": "FLAT",
-                        "rel_vol": rel_vol,
-                    })
+                    read_only_summary = self._build_read_only_strategy_summary(
+                        symbol,
+                        read_only_strategy_result,
+                        rel_vol=rel_vol,
+                    )
+                    summary_list.append(
+                        read_only_summary
+                        or {
+                            "symbol": symbol,
+                            "status": "FLAT",
+                            "rel_vol": rel_vol,
+                        }
+                    )
                     continue
                 # --- 4. Теперь применяем влияние новостей на Score ---
                 score_bonus = 0
@@ -448,12 +633,20 @@ class InstitutionalBot:
                 )
 
                 if score < risk_cfg["min_score_to_enter"]:
-                    summary_list.append({
-                        "symbol": symbol,
-                        "status": "REJECT",
-                        "reason": f"Недобор баллов ({score}/{risk_cfg['min_score_to_enter']})",
-                        "rel_vol": rel_vol,
-                    })
+                    read_only_summary = self._build_read_only_strategy_summary(
+                        symbol,
+                        read_only_strategy_result,
+                        rel_vol=rel_vol,
+                    )
+                    summary_list.append(
+                        read_only_summary
+                        or {
+                            "symbol": symbol,
+                            "status": "REJECT",
+                            "reason": f"Недобор баллов ({score}/{risk_cfg['min_score_to_enter']})",
+                            "rel_vol": rel_vol,
+                        }
+                    )
                     time.sleep(2)
                     continue
 

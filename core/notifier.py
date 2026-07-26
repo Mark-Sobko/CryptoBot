@@ -206,6 +206,7 @@ class TelegramNotifier:
         )
 
         active_signals = []
+        alt_watches = []
         rejected_coins = []
         flat_coins = []
 
@@ -216,6 +217,12 @@ class TelegramNotifier:
             if status == "SIGNAL":
                 active_signals.append(
                     f"• <b>#{symbol}</b>: {self._e(item.get('side', ''))} "
+                    f"(Score: {self._e(item.get('score', 0))})"
+                )
+            elif status == "ALT_WATCH":
+                alt_watches.append(
+                    f"• <b>#{symbol}</b>: {self._e(item.get('side', ''))} "
+                    f"{self._e(item.get('reason', 'read-only candidate'))} "
                     f"(Score: {self._e(item.get('score', 0))})"
                 )
             elif status == "FLAT":
@@ -234,6 +241,15 @@ class TelegramNotifier:
                 "<b>🔥 SIGNALS FOUND:</b>\n"
                 "• <i>No valid institutional patterns now.</i>\n\n"
             )
+
+        if alt_watches:
+            shown = alt_watches[:10]
+            msg += "<b>🧭 READ-ONLY ALT WATCH:</b>\n" + "\n".join(shown)
+
+            if len(alt_watches) > 10:
+                msg += f"\n...and {len(alt_watches) - 10} more."
+
+            msg += "\n\n"
 
         if rejected_coins:
             shown = rejected_coins[:15]

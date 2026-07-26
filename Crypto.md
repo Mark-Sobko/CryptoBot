@@ -76,6 +76,7 @@ Guarded `main.py` demo launch:
 
 ```bash
 BYBIT_DEMO=true BYBIT_TESTNET=false .venv/bin/python main.py
+MULTI_STRATEGY_READ_ONLY=true BYBIT_DEMO=true BYBIT_TESTNET=false .venv/bin/python main.py
 ```
 
 `main.py` refuses live trading unless
@@ -157,6 +158,10 @@ JSON, or progress JSONL and emits a compact decision report with regime counts,
 Mean Reversion, Breakout, Trend Pullback, and Volatility Expansion watch totals,
 coordinator selections, strategy failed-check/reason aggregates, top repeated
 symbol/status blockers, cycle errors, and the next recommended review action.
+`main.py` can also run the same multi-strategy analysis as read-only telemetry
+through `MULTI_STRATEGY_READ_ONLY=true`. In that mode the main SMC execution
+path does not change: alternative strategies can only log `ALT_WATCH`,
+`ALT_CONFLICT`, or `ALT_REJECT` summary states and cannot submit orders.
 
 CI and security checks:
 

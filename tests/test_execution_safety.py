@@ -792,6 +792,127 @@ class ExecutionSafetyTests(unittest.TestCase):
 
         self.assertEqual(bot._missing_entry_quality_checks(analysis), [])
 
+    def test_main_read_only_strategy_analyzer_can_be_disabled(self):
+        InstitutionalBot = self._import_institutional_bot()
+
+        bot = InstitutionalBot.__new__(InstitutionalBot)
+        bot.multi_strategy_read_only = False
+        bot.regime_classifier = mock.Mock()
+
+        self.assertIsNone(bot._analyze_read_only_strategies("BTCUSDT", {}))
+        bot.regime_classifier.analyze.assert_not_called()
+
+    def test_main_read_only_strategy_analyzer_uses_existing_market_data(self):
+        InstitutionalBot = self._import_institutional_bot()
+
+        bot = InstitutionalBot.__new__(InstitutionalBot)
+        bot.logger = logging.getLogger("test.InstitutionalBot")
+        bot.multi_strategy_read_only = True
+        bot.regime_classifier = mock.Mock()
+        bot.regime_classifier.analyze.return_value = {"regime": "RANGE", "confidence": 80}
+
+        mean_reversion = {"strategy": "MEAN_REVERSION", "status": "DISABLED"}
+        breakout = {"strategy": "BREAKOUT", "status": "DISABLED"}
+        trend_pullback = {"strategy": "TREND_PULLBACK", "status": "DISABLED"}
+        volatility_expansion = {"strategy": "VOLATILITY_EXPANSION", "status": "DISABLED"}
+        decision = {
+            "decision": "NO_ACTION",
+            "reason": "no_strategy_candidate",
+            "selected_strategy": None,
+        }
+
+        bot.mean_reversion_strategy = mock.Mock()
+        bot.mean_reversion_strategy.analyze.return_value = mean_reversion
+        bot.breakout_strategy = mock.Mock()
+        bot.breakout_strategy.analyze.return_value = breakout
+        bot.trend_pullback_strategy = mock.Mock()
+        bot.trend_pullback_strategy.analyze.return_value = trend_pullback
+        bot.volatility_expansion_strategy = mock.Mock()
+        bot.volatility_expansion_strategy.analyze.return_value = volatility_expansion
+        bot.read_only_strategy_coordinator = mock.Mock()
+        bot.read_only_strategy_coordinator.decide.return_value = decision
+
+        data = {"1h": object(), "15m": object(), "5m": object()}
+        result = bot._analyze_read_only_strategies("BTCUSDT", data)
+
+        self.assertEqual(result["decision"], decision)
+        bot.regime_classifier.analyze.assert_called_once_with(data)
+        bot.mean_reversion_strategy.analyze.assert_called_once_with(
+            symbol="BTCUSDT",
+            regime_result={"regime": "RANGE", "confidence": 80},
+            df_15m=data["15m"],
+            df_5m=data["5m"],
+        )
+        bot.read_only_strategy_coordinator.decide.assert_called_once()
+
+    def test_main_read_only_strategy_summary_reports_actionable_states(self):
+        InstitutionalBot = self._import_institutional_bot()
+
+        watch_summary = InstitutionalBot._build_read_only_strategy_summary(
+            "OPUSDT",
+            {
+                "decision": {
+                    "decision": "WATCH_ONLY",
+                    "selected_strategy": "MEAN_REVERSION",
+                    "side": "SHORT",
+                    "score": 82,
+                }
+            },
+            rel_vol=0.7,
+        )
+        conflict_summary = InstitutionalBot._build_read_only_strategy_summary(
+            "OPUSDT",
+            {
+                "decision": {
+                    "decision": "CONFLICT_NO_ACTION",
+                    "candidate_strategies": ["MEAN_REVERSION", "VOLATILITY_EXPANSION"],
+                }
+            },
+            rel_vol=0.8,
+        )
+        rejected_summary = InstitutionalBot._build_read_only_strategy_summary(
+            "OPUSDT",
+            {
+                "decision": {
+                    "decision": "NO_ACTION",
+                    "rejected_candidate_count": 1,
+                }
+            },
+            rel_vol=0.9,
+        )
+
+        self.assertEqual(watch_summary["status"], "ALT_WATCH")
+        self.assertEqual(watch_summary["side"], "SHORT")
+        self.assertEqual(watch_summary["rel_vol"], 0.7)
+        self.assertEqual(conflict_summary["status"], "ALT_CONFLICT")
+        self.assertEqual(rejected_summary["status"], "ALT_REJECT")
+
+    def test_market_summary_reports_alt_watch_separately(self):
+        from core.notifier import TelegramNotifier
+
+        notifier = TelegramNotifier.__new__(TelegramNotifier)
+        notifier.alerts = {"entry": True}
+        notifier.SAFE_LIMIT = 3900
+        notifier.send_message = mock.Mock()
+
+        notifier.notify_market_summary(
+            [
+                {
+                    "symbol": "OPUSDT",
+                    "status": "ALT_WATCH",
+                    "side": "SHORT",
+                    "score": 82,
+                    "reason": "MEAN_REVERSION read-only candidate",
+                    "rel_vol": 0.7,
+                }
+            ],
+            equity=1000.0,
+        )
+
+        message = notifier.send_message.call_args.args[0]
+        self.assertIn("READ-ONLY ALT WATCH", message)
+        self.assertNotIn("FILTERED OUT", message)
+
 
 if __name__ == "__main__":
     unittest.main()

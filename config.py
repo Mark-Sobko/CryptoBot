@@ -146,6 +146,7 @@ RISK_MANAGEMENT: Final[Dict[str, Any]] = {
         "require_m5_confirmation": _env_bool("REQUIRE_M5_CONFIRMATION", True),
         "require_pd_alignment": _env_bool("REQUIRE_PD_ALIGNMENT", True),
         "require_liquidity_target": _env_bool("REQUIRE_LIQUIDITY_TARGET", True),
+        "multi_strategy_read_only": _env_bool("MULTI_STRATEGY_READ_ONLY", True),
         "leverage": 10,
         "margin_type": "ISOLATED",
         "retry_attempts": 3,
@@ -263,6 +264,7 @@ def _validate_config() -> None:
         "require_m5_confirmation",
         "require_pd_alignment",
         "require_liquidity_target",
+        "multi_strategy_read_only",
     ]
     for key in boolean_flags:
         if not isinstance(global_cfg.get(key, True), bool):
