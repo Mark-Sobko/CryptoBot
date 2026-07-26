@@ -118,6 +118,10 @@ def summarize_payload(payload: dict[str, Any], *, top: int = 10) -> dict[str, An
         str((result.get("breakout") or {}).get("status", "UNKNOWN"))
         for result in results
     )
+    trend_pullback_counts = Counter(
+        str((result.get("trend_pullback") or {}).get("status", "UNKNOWN"))
+        for result in results
+    )
     decision_counts = Counter(
         str((result.get("decision") or {}).get("decision", "UNKNOWN"))
         for result in results
@@ -137,6 +141,11 @@ def summarize_payload(payload: dict[str, Any], *, top: int = 10) -> dict[str, An
         compact_watch(result, "breakout")
         for result in results
         if (result.get("breakout") or {}).get("status") == WATCH_ONLY
+    ]
+    trend_pullback_watches = [
+        compact_watch(result, "trend_pullback")
+        for result in results
+        if (result.get("trend_pullback") or {}).get("status") == WATCH_ONLY
     ]
     coordinator_watches = [
         compact_watch(result)
@@ -161,16 +170,19 @@ def summarize_payload(payload: dict[str, Any], *, top: int = 10) -> dict[str, An
         "status_counts": dict(sorted(status_counts.items())),
         "mean_reversion_status_counts": dict(sorted(mean_reversion_counts.items())),
         "breakout_status_counts": dict(sorted(breakout_counts.items())),
+        "trend_pullback_status_counts": dict(sorted(trend_pullback_counts.items())),
         "coordinator_decision_counts": dict(sorted(decision_counts.items())),
         "watch_total": len(regime_watches),
         "mean_reversion_watch_total": len(mean_reversion_watches),
         "breakout_watch_total": len(breakout_watches),
+        "trend_pullback_watch_total": len(trend_pullback_watches),
         "coordinator_watch_total": len(coordinator_watches),
         "cycle_errors_total": len(cycle_errors),
         "cycle_errors": cycle_errors[-top:],
         "top_regime_watches": regime_watches[:top],
         "top_mean_reversion_watches": mean_reversion_watches[:top],
         "top_breakout_watches": breakout_watches[:top],
+        "top_trend_pullback_watches": trend_pullback_watches[:top],
         "top_coordinator_watches": coordinator_watches[:top],
     }
     summary["recommendation"] = build_recommendation(summary)
@@ -183,7 +195,7 @@ def build_recommendation(summary: dict[str, Any]) -> dict[str, str]:
     coordinator_watch_total = int(summary.get("coordinator_watch_total", 0) or 0)
     strategy_watch_total = int(summary.get("mean_reversion_watch_total", 0) or 0) + int(
         summary.get("breakout_watch_total", 0) or 0
-    )
+    ) + int(summary.get("trend_pullback_watch_total", 0) or 0)
 
     if cycles_completed <= 0:
         return {

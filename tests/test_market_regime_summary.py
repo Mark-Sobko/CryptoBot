@@ -25,6 +25,20 @@ class MarketRegimeSummaryTests(unittest.TestCase):
                     "trade_posture": "USE_SMC",
                     "mean_reversion": {"status": "DISABLED"},
                     "breakout": {"status": "DISABLED"},
+                    "trend_pullback": {
+                        "strategy": "TREND_PULLBACK",
+                        "status": "WATCH_ONLY",
+                        "score": 82,
+                        "threshold": 78,
+                        "side": "LONG",
+                        "plan": {
+                            "order_type": "Limit",
+                            "entry": 100.5,
+                            "stop_loss": 98.9,
+                            "target": 104.0,
+                            "rr": 2.18,
+                        },
+                    },
                     "decision": {"decision": "NO_ACTION"},
                 },
                 {
@@ -48,6 +62,7 @@ class MarketRegimeSummaryTests(unittest.TestCase):
                             "rr": 2.0,
                         },
                     },
+                    "trend_pullback": {"status": "DISABLED"},
                     "decision": {
                         "decision": "WATCH_ONLY",
                         "selected_strategy": "BREAKOUT",
@@ -70,9 +85,11 @@ class MarketRegimeSummaryTests(unittest.TestCase):
 
         self.assertEqual(summary["regime_counts"]["TRENDING"], 1)
         self.assertEqual(summary["breakout_watch_total"], 1)
+        self.assertEqual(summary["trend_pullback_watch_total"], 1)
         self.assertEqual(summary["coordinator_watch_total"], 1)
         self.assertEqual(summary["recommendation"]["status"], "REVIEW_COORDINATED_WATCHES")
         self.assertEqual(summary["top_breakout_watches"][0]["symbol"], "WIFUSDT")
+        self.assertEqual(summary["top_trend_pullback_watches"][0]["symbol"], "BTCUSDT")
 
     def test_loads_progress_jsonl_payload(self):
         with tempfile.TemporaryDirectory() as tmpdir:

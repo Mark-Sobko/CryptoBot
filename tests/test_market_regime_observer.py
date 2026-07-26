@@ -147,6 +147,27 @@ class MarketRegimeObserverTests(unittest.TestCase):
                 "setup": {"status": "RANGE_EDGE_WATCH", "side": "SHORT"},
             },
             {
+                "symbol": "SOLUSDT",
+                "status": "SMC_ONLY",
+                "regime": REGIME_TRENDING,
+                "confidence": 84,
+                "trade_posture": "USE_SMC",
+                "reason": "adx_efficiency_and_volatility_confirmed",
+                "metrics": self._base_metrics(adx=28.0, er=0.42),
+                "trend_pullback": {
+                    "strategy": "TREND_PULLBACK",
+                    "status": "WATCH_ONLY",
+                    "score": 88,
+                    "threshold": 78,
+                    "side": "LONG",
+                    "order_type": "Limit",
+                    "entry": 100.2,
+                    "stop_loss": 98.8,
+                    "target": 103.4,
+                    "rr": 2.2857,
+                },
+            },
+            {
                 "symbol": "BTCUSDT",
                 "status": "NO_TRADE",
                 "regime": REGIME_CHOP,
@@ -163,7 +184,38 @@ class MarketRegimeObserverTests(unittest.TestCase):
         self.assertEqual(summary["watch_total"], 1)
         self.assertEqual(summary["range_edge_watch_total"], 1)
         self.assertEqual(summary["regime_counts"][REGIME_CHOP], 1)
+        self.assertEqual(summary["trend_pullback_watch_total"], 1)
+        self.assertEqual(summary["trend_pullback_status_counts"]["WATCH_ONLY"], 1)
         self.assertEqual(compact["setup"]["side"], "SHORT")
+
+    def test_summarize_cycles_counts_trend_pullback_watch_cycles(self):
+        cycles = [
+            {
+                "cycle": 1,
+                "results": [
+                    {
+                        "symbol": "SOLUSDT",
+                        "status": "SMC_ONLY",
+                        "regime": REGIME_TRENDING,
+                        "confidence": 84,
+                        "trade_posture": "USE_SMC",
+                        "trend_pullback": {
+                            "strategy": "TREND_PULLBACK",
+                            "status": "WATCH_ONLY",
+                            "score": 88,
+                            "threshold": 78,
+                            "side": "LONG",
+                        },
+                    }
+                ],
+                "summary": {"trend_pullback_watch_total": 1},
+            }
+        ]
+
+        summary = summarize_cycles(cycles)
+
+        self.assertEqual(summary["trend_pullback_watch_total"], 1)
+        self.assertEqual(summary["cycles_with_trend_pullback_watch"], 1)
 
     def test_writes_progress_jsonl_and_final_json_outputs(self):
         with tempfile.TemporaryDirectory() as tmpdir:

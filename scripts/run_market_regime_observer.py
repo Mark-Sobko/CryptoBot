@@ -34,6 +34,8 @@ from engine.strategies.breakout import STATUS_WATCH_ONLY as BO_STATUS_WATCH_ONLY
 from engine.strategies.breakout import BreakoutStrategy
 from engine.strategies.mean_reversion import STATUS_WATCH_ONLY as MR_STATUS_WATCH_ONLY
 from engine.strategies.mean_reversion import MeanReversionStrategy
+from engine.strategies.trend_pullback import STATUS_WATCH_ONLY as TP_STATUS_WATCH_ONLY
+from engine.strategies.trend_pullback import TrendPullbackStrategy
 from engine.strategy_coordinator import ReadOnlyStrategyCoordinator
 from scripts.run_strategy_observer import (
     parse_symbols,
@@ -135,6 +137,52 @@ def compact_breakout(result: dict[str, Any] | None) -> dict[str, Any] | None:
     return compact
 
 
+def compact_trend_pullback(result: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(result, dict):
+        return None
+
+    compact = {
+        "strategy": result.get("strategy"),
+        "status": result.get("status"),
+        "score": result.get("score"),
+        "threshold": result.get("threshold"),
+        "side": result.get("side"),
+        "reason": result.get("reason"),
+        "failed_checks": result.get("failed_checks", []),
+        "read_only": True,
+        "execution_disabled": True,
+    }
+
+    if result.get("status") == TP_STATUS_WATCH_ONLY:
+        compact["plan"] = {
+            "order_type": result.get("order_type"),
+            "entry": result.get("entry"),
+            "stop_loss": result.get("stop_loss"),
+            "target": result.get("target"),
+            "rr": result.get("rr"),
+        }
+
+    checks = result.get("checks")
+    if isinstance(checks, dict):
+        compact["checks"] = {
+            "htf_ema50_slope_pct": checks.get("htf_ema50_slope_pct"),
+            "ltf_aligned": checks.get("ltf_aligned"),
+            "touched_value": checks.get("touched_value"),
+            "reclaimed_value": checks.get("reclaimed_value"),
+            "structure_held": checks.get("structure_held"),
+            "value_distance_atr": checks.get("value_distance_atr"),
+            "max_value_distance_atr": checks.get("max_value_distance_atr"),
+            "pullback_volume_ratio": checks.get("pullback_volume_ratio"),
+            "max_pullback_volume_ratio": checks.get("max_pullback_volume_ratio"),
+            "trigger_body_ratio": checks.get("trigger_body_ratio"),
+            "trigger_volume_ratio": checks.get("trigger_volume_ratio"),
+            "limit_entry": checks.get("limit_entry"),
+            "min_rr": checks.get("min_rr"),
+        }
+
+    return compact
+
+
 def compact_decision(decision: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(decision, dict):
         return None
@@ -191,6 +239,10 @@ def compact_result(result: dict[str, Any]) -> dict[str, Any]:
     if breakout:
         compact["breakout"] = breakout
 
+    trend_pullback = compact_trend_pullback(result.get("trend_pullback"))
+    if trend_pullback:
+        compact["trend_pullback"] = trend_pullback
+
     decision = compact_decision(result.get("decision"))
     if decision:
         compact["decision"] = decision
@@ -208,6 +260,10 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
     )
     breakout_status_counts = Counter(
         str((result.get("breakout") or {}).get("status", "UNKNOWN"))
+        for result in results
+    )
+    trend_pullback_status_counts = Counter(
+        str((result.get("trend_pullback") or {}).get("status", "UNKNOWN"))
         for result in results
     )
     coordinator_decision_counts = Counter(
@@ -234,6 +290,11 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         for result in results
         if (result.get("breakout") or {}).get("status") == BO_STATUS_WATCH_ONLY
     ]
+    trend_pullback_watches = [
+        compact_result(result)
+        for result in results
+        if (result.get("trend_pullback") or {}).get("status") == TP_STATUS_WATCH_ONLY
+    ]
 
     high_confidence = [
         compact_result(result)
@@ -256,12 +317,15 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         "compression_watch_total": len(compression_watches),
         "mean_reversion_watch_total": len(mean_reversion_watches),
         "breakout_watch_total": len(breakout_watches),
+        "trend_pullback_watch_total": len(trend_pullback_watches),
         "range_edge_watches": range_watches[:10],
         "compression_watches": compression_watches[:10],
         "mean_reversion_watches": mean_reversion_watches[:10],
         "breakout_watches": breakout_watches[:10],
+        "trend_pullback_watches": trend_pullback_watches[:10],
         "mean_reversion_status_counts": dict(sorted(mean_reversion_status_counts.items())),
         "breakout_status_counts": dict(sorted(breakout_status_counts.items())),
+        "trend_pullback_status_counts": dict(sorted(trend_pullback_status_counts.items())),
         "coordinator_decision_counts": dict(sorted(coordinator_decision_counts.items())),
         "high_confidence": high_confidence,
     }
@@ -294,6 +358,11 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
         1
         for cycle in cycles
         if (cycle.get("summary") or {}).get("breakout_watch_total", 0)
+    )
+    summary["cycles_with_trend_pullback_watch"] = sum(
+        1
+        for cycle in cycles
+        if (cycle.get("summary") or {}).get("trend_pullback_watch_total", 0)
     )
     summary["errors_total"] = sum(
         1 for result in all_results if result.get("regime") == REGIME_DATA_ERROR
@@ -432,6 +501,7 @@ class ReadOnlyMarketRegimeObserver:
         self.classifier = MarketRegimeClassifier()
         self.mean_reversion = MeanReversionStrategy()
         self.breakout = BreakoutStrategy()
+        self.trend_pullback = TrendPullbackStrategy()
         self.coordinator = ReadOnlyStrategyCoordinator()
 
     def run_cycle(self, symbols: list[str]) -> dict[str, Any]:
@@ -468,10 +538,17 @@ class ReadOnlyMarketRegimeObserver:
                     df_15m=data.get("15m"),
                     df_5m=data.get("5m"),
                 )
+                trend_pullback = self.trend_pullback.analyze(
+                    symbol=symbol,
+                    regime_result=analyzed,
+                    df_1h=data.get("1h"),
+                    df_15m=data.get("15m"),
+                    df_5m=data.get("5m"),
+                )
                 decision = self.coordinator.decide(
                     symbol=symbol,
                     regime_result=analyzed,
-                    strategy_results=[mean_reversion, breakout],
+                    strategy_results=[mean_reversion, breakout, trend_pullback],
                 )
                 setup = analyzed.get("setup")
                 setup_status = (
@@ -486,6 +563,7 @@ class ReadOnlyMarketRegimeObserver:
                         "status": setup_status,
                         "mean_reversion": mean_reversion,
                         "breakout": breakout,
+                        "trend_pullback": trend_pullback,
                         "decision": decision,
                         **analyzed,
                     }
