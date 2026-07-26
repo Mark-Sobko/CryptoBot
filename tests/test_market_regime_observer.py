@@ -23,8 +23,12 @@ from engine.market_regime import (
 )
 from scripts.run_market_regime_observer import (
     append_jsonl_file,
+    build_cycle_error,
+    build_run_output,
     compact_result,
+    RUN_STATUS_COMPLETED_WITH_ERRORS,
     summarize_results,
+    summarize_cycles,
     write_json_file,
 )
 
@@ -177,6 +181,38 @@ class MarketRegimeObserverTests(unittest.TestCase):
             self.assertEqual(json.loads(progress_lines[0])["cycle"], 1)
             self.assertEqual(json.loads(progress_lines[1])["cycle"], 2)
             self.assertEqual(final_payload["cycles_completed"], 2)
+
+    def test_cycle_error_keeps_unattended_run_summarizable(self):
+        cycle = build_cycle_error(["BTCUSDT", "ETHUSDT"], RuntimeError("api timeout"))
+        cycle["cycle"] = 1
+        cycle["duration_s"] = 0.01
+
+        summary = summarize_cycles([cycle])
+        output = build_run_output(
+            status=RUN_STATUS_COMPLETED_WITH_ERRORS,
+            cycles_requested=3,
+            symbols=["BTCUSDT", "ETHUSDT"],
+            cycles=[cycle],
+            summary_only=True,
+        )
+
+        self.assertEqual(cycle["status"], "CYCLE_ERROR")
+        self.assertEqual(summary["cycle_errors_total"], 1)
+        self.assertEqual(summary["errors_total"], 2)
+        self.assertEqual(output["status"], RUN_STATUS_COMPLETED_WITH_ERRORS)
+        self.assertEqual(output["cycles_completed"], 1)
+        self.assertEqual(output["cycles"][0]["cycle_error"]["symbols_requested"], 2)
+
+    def test_write_json_file_replaces_existing_checkpoint_atomically(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            checkpoint_path = Path(tmpdir) / "checkpoint.json"
+
+            write_json_file(str(checkpoint_path), {"status": "RUNNING", "cycles_completed": 1})
+            write_json_file(str(checkpoint_path), {"status": "OK", "cycles_completed": 2})
+
+            payload = json.loads(checkpoint_path.read_text())
+            self.assertEqual(payload["status"], "OK")
+            self.assertEqual(payload["cycles_completed"], 2)
 
 
 if __name__ == "__main__":

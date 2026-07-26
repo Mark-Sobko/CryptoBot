@@ -46,6 +46,12 @@ WATCH_STATUSES = {
     "RANGE_EDGE_WATCH",
     "WAIT_BREAKOUT",
 }
+RUN_STATUS_OK = "OK"
+RUN_STATUS_COMPLETED_WITH_ERRORS = "COMPLETED_WITH_ERRORS"
+RUN_STATUS_INTERRUPTED = "INTERRUPTED"
+RUN_STATUS_RUNNING = "RUNNING"
+RUN_STATUS_RUNNING_WITH_ERRORS = "RUNNING_WITH_ERRORS"
+STATUS_CYCLE_ERROR = "CYCLE_ERROR"
 
 
 def compact_mean_reversion(result: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -268,6 +274,11 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
         if isinstance(results, list):
             all_results.extend(result for result in results if isinstance(result, dict))
 
+    cycle_errors = [
+        cycle.get("cycle_error")
+        for cycle in cycles
+        if isinstance(cycle.get("cycle_error"), dict)
+    ]
     summary = summarize_results(all_results)
     summary["cycles_with_watch"] = sum(
         1
@@ -287,13 +298,17 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
     summary["errors_total"] = sum(
         1 for result in all_results if result.get("regime") == REGIME_DATA_ERROR
     )
+    summary["cycle_errors_total"] = len(cycle_errors)
+    summary["cycle_errors"] = cycle_errors[-10:]
     return summary
 
 
 def write_json_file(path: str, payload: dict[str, Any]) -> None:
     target = Path(path).expanduser()
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    temp_target = target.with_name(f".{target.name}.tmp")
+    temp_target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temp_target.replace(target)
 
 
 def append_jsonl_file(path: str, payload: dict[str, Any]) -> None:
@@ -302,6 +317,113 @@ def append_jsonl_file(path: str, payload: dict[str, Any]) -> None:
     with target.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, sort_keys=True) + "\n")
         handle.flush()
+
+
+def _record_output_error(
+    output_errors: list[dict[str, Any]],
+    *,
+    path: str,
+    operation: str,
+    exc: Exception,
+) -> None:
+    error = {
+        "path": path,
+        "operation": operation,
+        "error": f"{type(exc).__name__}:{str(exc)[:180]}",
+    }
+    output_errors.append(error)
+    print(
+        f"OUTPUT_WRITE_ERROR {operation} {path}: {error['error']}",
+        file=sys.stderr,
+    )
+
+
+def safe_write_json_file(
+    path: str,
+    payload: dict[str, Any],
+    output_errors: list[dict[str, Any]],
+) -> None:
+    try:
+        write_json_file(path, payload)
+    except Exception as exc:
+        _record_output_error(
+            output_errors,
+            path=path,
+            operation="write_json",
+            exc=exc,
+        )
+
+
+def safe_append_jsonl_file(
+    path: str,
+    payload: dict[str, Any],
+    output_errors: list[dict[str, Any]],
+) -> None:
+    try:
+        append_jsonl_file(path, payload)
+    except Exception as exc:
+        _record_output_error(
+            output_errors,
+            path=path,
+            operation="append_jsonl",
+            exc=exc,
+        )
+
+
+def build_cycle_error(symbols: list[str], exc: Exception) -> dict[str, Any]:
+    reason = f"{type(exc).__name__}:{str(exc)[:180]}"
+    results = [
+        {
+            "symbol": symbol,
+            "status": "ERROR",
+            "regime": REGIME_DATA_ERROR,
+            "confidence": 0,
+            "trade_posture": "NO_TRADE",
+            "reason": reason,
+            "metrics": {"ok": False, "reason": "cycle_exception"},
+        }
+        for symbol in symbols
+    ]
+    return {
+        "status": STATUS_CYCLE_ERROR,
+        "read_only": True,
+        "execution_disabled": True,
+        "symbols_scanned": 0,
+        "symbols_requested": len(symbols),
+        "cycle_error": {
+            "reason": reason,
+            "symbols_requested": len(symbols),
+        },
+        "results": results,
+        "summary": summarize_results(results),
+    }
+
+
+def build_run_output(
+    *,
+    status: str,
+    cycles_requested: int,
+    symbols: list[str],
+    cycles: list[dict[str, Any]],
+    summary_only: bool,
+    output_errors: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    summary = summarize_cycles(cycles)
+    if output_errors:
+        summary["output_errors_total"] = len(output_errors)
+        summary["output_errors"] = output_errors[-10:]
+
+    return {
+        "status": status,
+        "read_only": True,
+        "execution_disabled": True,
+        "environment": {"demo": config.BYBIT_DEMO, "testnet": config.BYBIT_TESTNET},
+        "cycles_requested": cycles_requested,
+        "cycles_completed": len(cycles),
+        "symbols": symbols,
+        "summary": summary,
+        "cycles": [compact_cycle(cycle) for cycle in cycles] if summary_only else cycles,
+    }
 
 
 class ReadOnlyMarketRegimeObserver:
@@ -392,7 +514,7 @@ class ReadOnlyMarketRegimeObserver:
 
 
 def compact_cycle(cycle: dict[str, Any]) -> dict[str, Any]:
-    return {
+    compact = {
         "cycle": cycle.get("cycle"),
         "duration_s": cycle.get("duration_s"),
         "status": cycle.get("status"),
@@ -402,6 +524,9 @@ def compact_cycle(cycle: dict[str, Any]) -> dict[str, Any]:
         "summary": cycle.get("summary"),
         "results": [compact_result(result) for result in cycle.get("results", [])],
     }
+    if isinstance(cycle.get("cycle_error"), dict):
+        compact["cycle_error"] = cycle["cycle_error"]
+    return compact
 
 
 def main() -> int:
@@ -422,6 +547,11 @@ def main() -> int:
         default="",
         help="Write the final JSON output to this path in addition to stdout.",
     )
+    parser.add_argument(
+        "--checkpoint-output",
+        default="",
+        help="Write a rolling partial JSON output after every cycle for unattended runs.",
+    )
     args = parser.parse_args()
 
     if args.cycles <= 0:
@@ -439,44 +569,83 @@ def main() -> int:
 
     observer = ReadOnlyMarketRegimeObserver()
     cycles: list[dict[str, Any]] = []
+    output_errors: list[dict[str, Any]] = []
+    interrupted = False
 
-    for index in range(1, args.cycles + 1):
-        started_at = time.time()
-        cycle = observer.run_cycle(symbols)
-        cycle["cycle"] = index
-        cycle["duration_s"] = round(time.time() - started_at, 3)
-        cycles.append(cycle)
+    try:
+        for index in range(1, args.cycles + 1):
+            started_at = time.time()
+            try:
+                cycle = observer.run_cycle(symbols)
+            except Exception as exc:
+                cycle = build_cycle_error(symbols, exc)
+            cycle["cycle"] = index
+            cycle["duration_s"] = round(time.time() - started_at, 3)
+            cycles.append(cycle)
 
-        if args.progress_jsonl:
-            append_jsonl_file(
-                args.progress_jsonl,
-                {
-                    "type": "cycle",
-                    "cycle": index,
-                    "cycles_requested": args.cycles,
-                    "completed_at": round(time.time(), 3),
-                    "summary": cycle.get("summary"),
-                    "result": compact_cycle(cycle),
-                },
+            has_cycle_errors = any(
+                isinstance(existing_cycle.get("cycle_error"), dict)
+                for existing_cycle in cycles
+            )
+            checkpoint_status = (
+                RUN_STATUS_RUNNING_WITH_ERRORS if has_cycle_errors else RUN_STATUS_RUNNING
             )
 
-        if index < args.cycles:
-            time.sleep(max(args.sleep, 0.0))
+            if args.progress_jsonl:
+                safe_append_jsonl_file(
+                    args.progress_jsonl,
+                    {
+                        "type": "cycle",
+                        "cycle": index,
+                        "cycles_requested": args.cycles,
+                        "completed_at": round(time.time(), 3),
+                        "summary": cycle.get("summary"),
+                        "result": compact_cycle(cycle),
+                    },
+                    output_errors,
+                )
 
-    output = {
-        "status": "OK",
-        "read_only": True,
-        "execution_disabled": True,
-        "environment": {"demo": config.BYBIT_DEMO, "testnet": config.BYBIT_TESTNET},
-        "cycles_requested": args.cycles,
-        "cycles_completed": len(cycles),
-        "symbols": symbols,
-        "summary": summarize_cycles(cycles),
-        "cycles": [compact_cycle(cycle) for cycle in cycles] if args.summary_only else cycles,
-    }
+            if args.checkpoint_output:
+                checkpoint = build_run_output(
+                    status=checkpoint_status,
+                    cycles_requested=args.cycles,
+                    symbols=symbols,
+                    cycles=cycles,
+                    summary_only=True,
+                    output_errors=output_errors,
+                )
+                safe_write_json_file(args.checkpoint_output, checkpoint, output_errors)
+
+            if index < args.cycles:
+                time.sleep(max(args.sleep, 0.0))
+    except KeyboardInterrupt:
+        interrupted = True
+
+    has_cycle_errors = any(
+        isinstance(existing_cycle.get("cycle_error"), dict)
+        for existing_cycle in cycles
+    )
+    if interrupted:
+        final_status = RUN_STATUS_INTERRUPTED
+    elif has_cycle_errors:
+        final_status = RUN_STATUS_COMPLETED_WITH_ERRORS
+    else:
+        final_status = RUN_STATUS_OK
+
+    output = build_run_output(
+        status=final_status,
+        cycles_requested=args.cycles,
+        symbols=symbols,
+        cycles=cycles,
+        summary_only=args.summary_only,
+        output_errors=output_errors,
+    )
+
+    if args.checkpoint_output:
+        safe_write_json_file(args.checkpoint_output, output, output_errors)
 
     if args.final_output:
-        write_json_file(args.final_output, output)
+        safe_write_json_file(args.final_output, output, output_errors)
 
     print(json.dumps(output, indent=2, sort_keys=True))
     return 0

@@ -66,7 +66,7 @@ python3 scripts/run_paper_lifecycle.py --db /tmp/cryptobot_paper_partial_lifecyc
 .venv/bin/python scripts/run_strategy_observer.py --cycles 3 --sleep 60 --max-symbols 5
 .venv/bin/python scripts/run_strategy_observer.py --cycles 10 --sleep 60 --max-symbols 0 --summary-only
 .venv/bin/python scripts/run_market_regime_observer.py --cycles 10 --sleep 60 --max-symbols 0 --summary-only
-.venv/bin/python scripts/run_market_regime_observer.py --cycles 288 --sleep 300 --max-symbols 0 --summary-only --progress-jsonl /tmp/cryptobot_regime_progress.jsonl --final-output /tmp/cryptobot_regime_final.json
+.venv/bin/python scripts/run_market_regime_observer.py --cycles 288 --sleep 300 --max-symbols 0 --summary-only --progress-jsonl /tmp/cryptobot_regime_progress.jsonl --checkpoint-output /tmp/cryptobot_regime_checkpoint.json --final-output /tmp/cryptobot_regime_final.json
 .venv/bin/python scripts/run_bybit_demo_lifecycle.py --partial-fill-probe-only --max-notional 15 --wait 8 --partial-fill-dynamic-candidates 10 --partial-fill-max-scan 100 --partial-fill-target-notional-pct 0.95
 .venv/bin/python scripts/run_bybit_demo_lifecycle.py --partial-fill-probe-only --max-notional 25 --wait 8 --partial-fill-dynamic-candidates 10 --partial-fill-max-scan 250 --partial-fill-target-notional-pct 0.95 --partial-fill-price-levels 5 --partial-fill-orderbook-depth 50 --partial-fill-poll-interval 0.1
 ```
@@ -133,8 +133,11 @@ hold beyond the broken edge, retest, and minimum R:R before they become
 `WATCH_ONLY`. The coordinator can select only one watch candidate per symbol and
 emits `NO_ACTION`, `WATCH_ONLY`, or `CONFLICT_NO_ACTION`; it still cannot place
 or size an order. Long unattended observer runs can use `--progress-jsonl` to
-append one compact cycle summary after every completed cycle and `--final-output`
-to write the final JSON summary when the run finishes.
+append one compact cycle summary after every completed cycle,
+`--checkpoint-output` to keep a rolling partial aggregate that survives
+interruption, and `--final-output` to write the final JSON summary when the run
+finishes. A full-cycle failure is recorded as `CYCLE_ERROR` and the observer
+continues to the next interval instead of dropping the whole overnight run.
 
 CI and security checks:
 
