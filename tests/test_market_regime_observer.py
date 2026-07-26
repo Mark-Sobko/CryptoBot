@@ -1,4 +1,7 @@
+import json
 import os
+from pathlib import Path
+import tempfile
 import unittest
 
 import pandas as pd
@@ -18,7 +21,12 @@ from engine.market_regime import (
     calculate_regime_metrics,
     classify_regime_metrics,
 )
-from scripts.run_market_regime_observer import compact_result, summarize_results
+from scripts.run_market_regime_observer import (
+    append_jsonl_file,
+    compact_result,
+    summarize_results,
+    write_json_file,
+)
 
 
 class MarketRegimeObserverTests(unittest.TestCase):
@@ -152,6 +160,23 @@ class MarketRegimeObserverTests(unittest.TestCase):
         self.assertEqual(summary["range_edge_watch_total"], 1)
         self.assertEqual(summary["regime_counts"][REGIME_CHOP], 1)
         self.assertEqual(compact["setup"]["side"], "SHORT")
+
+    def test_writes_progress_jsonl_and_final_json_outputs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            progress_path = Path(tmpdir) / "nested" / "progress.jsonl"
+            final_path = Path(tmpdir) / "nested" / "final.json"
+
+            append_jsonl_file(str(progress_path), {"cycle": 1, "status": "OK"})
+            append_jsonl_file(str(progress_path), {"cycle": 2, "status": "OK"})
+            write_json_file(str(final_path), {"status": "OK", "cycles_completed": 2})
+
+            progress_lines = progress_path.read_text().strip().splitlines()
+            final_payload = json.loads(final_path.read_text())
+
+            self.assertEqual(len(progress_lines), 2)
+            self.assertEqual(json.loads(progress_lines[0])["cycle"], 1)
+            self.assertEqual(json.loads(progress_lines[1])["cycle"], 2)
+            self.assertEqual(final_payload["cycles_completed"], 2)
 
 
 if __name__ == "__main__":

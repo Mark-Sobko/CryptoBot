@@ -290,6 +290,20 @@ def summarize_cycles(cycles: list[dict[str, Any]]) -> dict[str, Any]:
     return summary
 
 
+def write_json_file(path: str, payload: dict[str, Any]) -> None:
+    target = Path(path).expanduser()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+def append_jsonl_file(path: str, payload: dict[str, Any]) -> None:
+    target = Path(path).expanduser()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, sort_keys=True) + "\n")
+        handle.flush()
+
+
 class ReadOnlyMarketRegimeObserver:
     def __init__(self) -> None:
         self.exchange = ExchangeManager()
@@ -398,6 +412,16 @@ def main() -> int:
     parser.add_argument("--sleep", type=float, default=60.0)
     parser.add_argument("--allow-production-read-only", action="store_true")
     parser.add_argument("--summary-only", action="store_true")
+    parser.add_argument(
+        "--progress-jsonl",
+        default="",
+        help="Append one compact JSON record per completed cycle for unattended runs.",
+    )
+    parser.add_argument(
+        "--final-output",
+        default="",
+        help="Write the final JSON output to this path in addition to stdout.",
+    )
     args = parser.parse_args()
 
     if args.cycles <= 0:
@@ -423,6 +447,19 @@ def main() -> int:
         cycle["duration_s"] = round(time.time() - started_at, 3)
         cycles.append(cycle)
 
+        if args.progress_jsonl:
+            append_jsonl_file(
+                args.progress_jsonl,
+                {
+                    "type": "cycle",
+                    "cycle": index,
+                    "cycles_requested": args.cycles,
+                    "completed_at": round(time.time(), 3),
+                    "summary": cycle.get("summary"),
+                    "result": compact_cycle(cycle),
+                },
+            )
+
         if index < args.cycles:
             time.sleep(max(args.sleep, 0.0))
 
@@ -437,6 +474,9 @@ def main() -> int:
         "summary": summarize_cycles(cycles),
         "cycles": [compact_cycle(cycle) for cycle in cycles] if args.summary_only else cycles,
     }
+
+    if args.final_output:
+        write_json_file(args.final_output, output)
 
     print(json.dumps(output, indent=2, sort_keys=True))
     return 0
