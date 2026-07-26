@@ -67,6 +67,7 @@ python3 scripts/run_paper_lifecycle.py --db /tmp/cryptobot_paper_partial_lifecyc
 .venv/bin/python scripts/run_strategy_observer.py --cycles 10 --sleep 60 --max-symbols 0 --summary-only
 .venv/bin/python scripts/run_market_regime_observer.py --cycles 10 --sleep 60 --max-symbols 0 --summary-only
 .venv/bin/python scripts/run_market_regime_observer.py --cycles 288 --sleep 300 --max-symbols 0 --summary-only --progress-jsonl /tmp/cryptobot_regime_progress.jsonl --checkpoint-output /tmp/cryptobot_regime_checkpoint.json --final-output /tmp/cryptobot_regime_final.json
+.venv/bin/python scripts/summarize_market_regime_observer.py /tmp/cryptobot_regime_checkpoint.json --top 10
 .venv/bin/python scripts/run_bybit_demo_lifecycle.py --partial-fill-probe-only --max-notional 15 --wait 8 --partial-fill-dynamic-candidates 10 --partial-fill-max-scan 100 --partial-fill-target-notional-pct 0.95
 .venv/bin/python scripts/run_bybit_demo_lifecycle.py --partial-fill-probe-only --max-notional 25 --wait 8 --partial-fill-dynamic-candidates 10 --partial-fill-max-scan 250 --partial-fill-target-notional-pct 0.95 --partial-fill-price-levels 5 --partial-fill-orderbook-depth 50 --partial-fill-poll-interval 0.1
 ```
@@ -138,6 +139,10 @@ append one compact cycle summary after every completed cycle,
 interruption, and `--final-output` to write the final JSON summary when the run
 finishes. A full-cycle failure is recorded as `CYCLE_ERROR` and the observer
 continues to the next interval instead of dropping the whole overnight run.
+`summarize_market_regime_observer.py` reads either the rolling checkpoint, final
+JSON, or progress JSONL and emits a compact decision report with regime counts,
+strategy watch totals, coordinator selections, cycle errors, and the next
+recommended review action.
 
 CI and security checks:
 

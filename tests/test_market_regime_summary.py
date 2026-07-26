@@ -1,0 +1,98 @@
+import json
+from pathlib import Path
+import tempfile
+import unittest
+
+from scripts.summarize_market_regime_observer import (
+    load_observer_payload,
+    summarize_payload,
+)
+
+
+class MarketRegimeSummaryTests(unittest.TestCase):
+    @staticmethod
+    def _cycle():
+        return {
+            "cycle": 1,
+            "status": "OK",
+            "symbols_scanned": 2,
+            "results": [
+                {
+                    "symbol": "BTCUSDT",
+                    "status": "SMC_ONLY",
+                    "regime": "TRENDING",
+                    "confidence": 74,
+                    "trade_posture": "USE_SMC",
+                    "mean_reversion": {"status": "DISABLED"},
+                    "breakout": {"status": "DISABLED"},
+                    "decision": {"decision": "NO_ACTION"},
+                },
+                {
+                    "symbol": "WIFUSDT",
+                    "status": "WAIT_BREAKOUT",
+                    "regime": "LOW_VOL_COMPRESSION",
+                    "confidence": 82,
+                    "trade_posture": "WAIT_BREAKOUT",
+                    "mean_reversion": {"status": "DISABLED"},
+                    "breakout": {
+                        "strategy": "BREAKOUT",
+                        "status": "WATCH_ONLY",
+                        "score": 88,
+                        "threshold": 75,
+                        "side": "SHORT",
+                        "plan": {
+                            "order_type": "Limit",
+                            "entry": 0.15,
+                            "stop_loss": 0.153,
+                            "target": 0.144,
+                            "rr": 2.0,
+                        },
+                    },
+                    "decision": {
+                        "decision": "WATCH_ONLY",
+                        "selected_strategy": "BREAKOUT",
+                        "side": "SHORT",
+                        "score": 88,
+                    },
+                },
+            ],
+        }
+
+    def test_summarizes_observer_json_payload(self):
+        payload = {
+            "status": "OK",
+            "cycles_requested": 1,
+            "cycles_completed": 1,
+            "cycles": [self._cycle()],
+        }
+
+        summary = summarize_payload(payload, top=3)
+
+        self.assertEqual(summary["regime_counts"]["TRENDING"], 1)
+        self.assertEqual(summary["breakout_watch_total"], 1)
+        self.assertEqual(summary["coordinator_watch_total"], 1)
+        self.assertEqual(summary["recommendation"]["status"], "REVIEW_COORDINATED_WATCHES")
+        self.assertEqual(summary["top_breakout_watches"][0]["symbol"], "WIFUSDT")
+
+    def test_loads_progress_jsonl_payload(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            progress_path = Path(tmpdir) / "progress.jsonl"
+            record = {
+                "type": "cycle",
+                "cycle": 1,
+                "cycles_requested": 12,
+                "result": self._cycle(),
+            }
+            progress_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            payload = load_observer_payload(str(progress_path))
+            summary = summarize_payload(payload, top=3)
+
+            self.assertEqual(payload["status"], "PROGRESS_JSONL")
+            self.assertEqual(payload["cycles_requested"], 12)
+            self.assertEqual(summary["cycles_completed"], 1)
+            self.assertEqual(summary["recommendation"]["status"], "REVIEW_COORDINATED_WATCHES")
+
+
+if __name__ == "__main__":
+    unittest.main()
