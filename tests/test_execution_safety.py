@@ -658,6 +658,99 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertEqual(session.order_params["timeInForce"], "GTC")
         self.assertEqual(executor.database_sync.saved[0]["status"], "PENDING_ORDER")
 
+    def test_executor_limit_order_uses_strategy_tp_override(self):
+        from core.executor import TradeExecutor
+
+        class FakeSession:
+            def __init__(self):
+                self.order_params = None
+
+            def get_tickers(self, **kwargs):
+                return {"retCode": 0, "result": {"list": [{"lastPrice": "100"}]}}
+
+            def place_order(self, **kwargs):
+                self.order_params = kwargs
+                return {"retCode": 0, "result": {"orderId": "order-1"}}
+
+        class FakeInstruments:
+            def refresh(self, symbol):
+                return True
+
+            def normalize_qty(self, symbol, qty):
+                return qty
+
+            def validate_order_size(self, symbol, qty, price):
+                return True
+
+            def normalize_stop(self, symbol, sl, side):
+                return sl
+
+            def normalize_tp(self, symbol, tp, side):
+                return tp
+
+        class FakeTPManager:
+            def calculate_tp_levels(self, entry, stop, side):
+                return {"tp1": 105.0}
+
+            def normalize_tp_levels(self, symbol, tp_levels, side):
+                return dict(tp_levels)
+
+            def validate_tp_levels(self, symbol, entry, side, tp_levels):
+                return True
+
+            def place_cascade_tps(self, **kwargs):
+                return True
+
+        class FakePositionManager:
+            def __init__(self):
+                self.positions = []
+
+            def remember_position(self, **kwargs):
+                self.positions.append(kwargs)
+
+        class FakeDatabaseSync:
+            def __init__(self):
+                self.saved = []
+
+            def save_open_trade(self, **kwargs):
+                self.saved.append(kwargs)
+                return True
+
+        class FakeAudit:
+            def log_trade_event(self, *args, **kwargs):
+                return None
+
+        session = FakeSession()
+        executor = TradeExecutor.__new__(TradeExecutor)
+        executor.session = session
+        executor.logger = logging.getLogger("test.TradeExecutor")
+        executor.audit = FakeAudit()
+        executor.instruments = FakeInstruments()
+        executor.tp_manager = FakeTPManager()
+        executor.position_manager = FakePositionManager()
+        executor.database_sync = FakeDatabaseSync()
+        executor.retry_attempts = 1
+        executor.max_slippage_pct = 1.0
+
+        result = executor.execute_institutional_entry(
+            symbol="BTCUSDT",
+            side="LONG",
+            poi={"type": "ALT_MEAN_REVERSION", "side": "LONG", "mid": 100.0},
+            score=85,
+            qty=1.0,
+            sl=95.0,
+            risk_pct=1.0,
+            order_type="Limit",
+            limit_price=100.0,
+            tp_levels_override={"tp1": 112.0},
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(session.order_params["takeProfit"], "112.0")
+        self.assertTrue(executor.position_manager.positions[0]["tps_placed"])
+        self.assertEqual(executor.database_sync.saved[0]["poi_type"], "ALT_MEAN_REVERSION")
+        self.assertAlmostEqual(executor.database_sync.saved[0]["rr"], 2.4)
+
     def test_main_refuses_live_mode_without_explicit_config_flag(self):
         import config
         InstitutionalBot = self._import_institutional_bot()
@@ -758,6 +851,124 @@ class ExecutionSafetyTests(unittest.TestCase):
         bot.orders_submitted_this_cycle = 0
 
         self.assertFalse(bot._execution_guard_allows_new_order("BTCUSDT"))
+
+    @staticmethod
+    def _alt_strategy_result():
+        return {
+            "decision": {
+                "symbol": "WIFUSDT",
+                "decision": "WATCH_ONLY",
+                "selected_strategy": "MEAN_REVERSION",
+                "side": "SHORT",
+                "score": 82,
+                "threshold": 70,
+                "plan": {
+                    "order_type": "Limit",
+                    "entry": 0.154,
+                    "stop_loss": 0.156,
+                    "target": 0.148,
+                    "rr": 3.0,
+                },
+            },
+        }
+
+    def test_main_multi_strategy_execution_flag_defaults_to_no_order(self):
+        InstitutionalBot = self._import_institutional_bot()
+
+        bot = InstitutionalBot.__new__(InstitutionalBot)
+        bot.multi_strategy_execution_enabled = False
+        bot.executor = mock.Mock()
+
+        result = bot._maybe_execute_read_only_strategy(
+            "WIFUSDT",
+            self._alt_strategy_result(),
+            {"max_open_trades": 1, "risk_per_trade_pct": 1.0},
+        )
+
+        self.assertIsNone(result)
+        bot.executor.execute_institutional_entry.assert_not_called()
+
+    def test_main_multi_strategy_execution_routes_valid_plan_through_executor(self):
+        InstitutionalBot = self._import_institutional_bot()
+
+        bot = InstitutionalBot.__new__(InstitutionalBot)
+        bot.logger = logging.getLogger("test.InstitutionalBot")
+        bot.multi_strategy_execution_enabled = True
+        bot.multi_strategy_allowed_strategies = {"MEAN_REVERSION"}
+        bot.multi_strategy_min_rr = 1.2
+        bot.execution_enabled = True
+        bot.max_orders_per_run = 0
+        bot.max_orders_per_cycle = 0
+        bot.orders_submitted_this_run = 0
+        bot.orders_submitted_this_cycle = 0
+        bot.max_order_notional_usd = 0.0
+        bot.db = mock.Mock()
+        bot.db.get_today_pnl_usd.return_value = 0.0
+        bot.ex = mock.Mock()
+        bot.ex.get_active_positions.return_value = []
+        bot.ex.can_open_new_trade.return_value = True
+        bot.ex.get_available_balance.return_value = 1000.0
+        bot.risk_manager = mock.Mock()
+        bot.risk_manager.check_safety_filters.return_value = (True, "SAFE")
+        bot.risk_manager.calculate_lot_size.return_value = (1000.0, 0.156)
+        bot.executor = mock.Mock()
+        bot.executor.execute_institutional_entry.return_value = {"retCode": 0}
+        bot.audit = mock.Mock()
+        bot.strategy_journal = mock.Mock()
+        bot.filters = types.SimpleNamespace(
+            last_adx=12.0,
+            last_er=0.2,
+            last_atr_pct=0.5,
+            last_rel_vol=0.8,
+        )
+        bot.notifier = mock.Mock()
+
+        result = bot._maybe_execute_read_only_strategy(
+            "WIFUSDT",
+            self._alt_strategy_result(),
+            {"max_open_trades": 1, "risk_per_trade_pct": 1.0},
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "ALT_EXECUTED")
+        self.assertEqual(bot.orders_submitted_this_run, 1)
+        call_kwargs = bot.executor.execute_institutional_entry.call_args.kwargs
+        self.assertEqual(call_kwargs["symbol"], "WIFUSDT")
+        self.assertEqual(call_kwargs["side"], "SHORT")
+        self.assertEqual(call_kwargs["order_type"], "Limit")
+        self.assertEqual(call_kwargs["limit_price"], 0.154)
+        self.assertEqual(call_kwargs["tp_levels_override"], {"tp1": 0.148})
+        self.assertEqual(call_kwargs["poi"]["type"], "ALT_MEAN_REVERSION")
+        self.assertEqual(call_kwargs["sl"], 0.156)
+        bot.notifier.notify_signal.assert_called_once()
+        event_type, symbol, payload = bot.strategy_journal.record.call_args.args
+        self.assertEqual(event_type, "ALT_STRATEGY_EXECUTION")
+        self.assertEqual(symbol, "WIFUSDT")
+        self.assertTrue(payload["order_submitted"])
+
+    def test_main_multi_strategy_execution_respects_global_execution_guard(self):
+        InstitutionalBot = self._import_institutional_bot()
+
+        bot = InstitutionalBot.__new__(InstitutionalBot)
+        bot.logger = logging.getLogger("test.InstitutionalBot")
+        bot.multi_strategy_execution_enabled = True
+        bot.multi_strategy_allowed_strategies = {"MEAN_REVERSION"}
+        bot.multi_strategy_min_rr = 1.2
+        bot.execution_enabled = False
+        bot.max_orders_per_run = 0
+        bot.max_orders_per_cycle = 0
+        bot.orders_submitted_this_run = 0
+        bot.orders_submitted_this_cycle = 0
+        bot.executor = mock.Mock()
+
+        result = bot._maybe_execute_read_only_strategy(
+            "WIFUSDT",
+            self._alt_strategy_result(),
+            {"max_open_trades": 1, "risk_per_trade_pct": 1.0},
+        )
+
+        self.assertIsNone(result)
+        bot.executor.execute_institutional_entry.assert_not_called()
 
     def test_main_entry_quality_gate_reports_missing_checks(self):
         InstitutionalBot = self._import_institutional_bot()
@@ -973,6 +1184,33 @@ class ExecutionSafetyTests(unittest.TestCase):
 
         message = notifier.send_message.call_args.args[0]
         self.assertIn("READ-ONLY ALT WATCH", message)
+        self.assertNotIn("FILTERED OUT", message)
+
+    def test_market_summary_reports_alt_executed_separately(self):
+        from core.notifier import TelegramNotifier
+
+        notifier = TelegramNotifier.__new__(TelegramNotifier)
+        notifier.alerts = {"entry": True}
+        notifier.SAFE_LIMIT = 3900
+        notifier.send_message = mock.Mock()
+
+        notifier.notify_market_summary(
+            [
+                {
+                    "symbol": "WIFUSDT",
+                    "status": "ALT_EXECUTED",
+                    "side": "SHORT",
+                    "score": 82,
+                    "reason": "MEAN_REVERSION submitted",
+                    "rel_vol": 0.7,
+                }
+            ],
+            equity=1000.0,
+        )
+
+        message = notifier.send_message.call_args.args[0]
+        self.assertIn("ALT STRATEGY EXECUTED", message)
+        self.assertIn("MEAN_REVERSION submitted", message)
         self.assertNotIn("FILTERED OUT", message)
 
 

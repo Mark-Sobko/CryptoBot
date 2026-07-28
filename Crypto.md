@@ -82,9 +82,15 @@ Guarded `main.py` demo launch:
 # Full main.py observation without new order submission:
 EXECUTION_ENABLED=false MULTI_STRATEGY_READ_ONLY=true BYBIT_DEMO=true BYBIT_TESTNET=false .venv/bin/python main.py
 
-# Guarded demo trading with runtime/order caps:
+# Guarded SMC-only demo trading with runtime/order caps:
 BYBIT_DEMO=true BYBIT_TESTNET=false .venv/bin/python main.py
-MULTI_STRATEGY_READ_ONLY=true BYBIT_DEMO=true BYBIT_TESTNET=false .venv/bin/python main.py
+
+# Guarded SMC + selected alternative-strategy demo trading:
+BYBIT_DEMO=true BYBIT_TESTNET=false EXECUTION_ENABLED=true \
+MULTI_STRATEGY_READ_ONLY=true MULTI_STRATEGY_EXECUTION_ENABLED=true \
+MULTI_STRATEGY_ALLOWED_STRATEGIES=MEAN_REVERSION,BREAKOUT,TREND_PULLBACK,VOLATILITY_EXPANSION \
+MAX_RUNTIME_MINUTES=30 MAX_ORDERS_PER_RUN=1 MAX_ORDERS_PER_CYCLE=1 MAX_ORDER_NOTIONAL_USD=25 \
+.venv/bin/python main.py
 ```
 
 `main.py` refuses live trading unless
@@ -174,6 +180,16 @@ symbol/status blockers, cycle errors, and the next recommended review action.
 through `MULTI_STRATEGY_READ_ONLY=true`. In that mode the main SMC execution
 path does not change: alternative strategies can only log `ALT_WATCH`,
 `ALT_CONFLICT`, or `ALT_REJECT` summary states and cannot submit orders.
+Alternative strategy execution is a separate explicit mode:
+`MULTI_STRATEGY_EXECUTION_ENABLED=true`. When enabled, the coordinator-selected
+Mean Reversion, Breakout, Trend Pullback, or Volatility Expansion plan is
+validated again for allowed strategy name, side, order type, entry/SL/target
+geometry, score, and `MULTI_STRATEGY_MIN_RR` before it reaches the same
+RiskManager, order caps, duplicate-position checks, notional guard, executor,
+SQLite, audit, and Telegram path used by SMC. Strategy-specific targets are
+passed to the executor as TP overrides instead of using the default SMC TP
+ratio grid. If an alternative strategy submits an order for a symbol, the SMC
+path skips that symbol for the same scan cycle to avoid duplicate entries.
 
 CI and security checks:
 

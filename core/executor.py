@@ -210,7 +210,8 @@ class TradeExecutor:
         sl: float,
         risk_pct: float,
         order_type: str = "Market",          # Внедряем тип ордера
-        limit_price: Optional[float] = None  # Внедряем цену исполнения
+        limit_price: Optional[float] = None,  # Внедряем цену исполнения
+        tp_levels_override: Optional[Dict[str, float]] = None,
     ) -> Optional[Dict[str, Any]]:
         try:
             order_type = "Limit" if str(order_type).lower() == "limit" else "Market"
@@ -259,11 +260,15 @@ class TradeExecutor:
 
             normalized_sl = self.instruments.normalize_stop(symbol, float(sl), trade_side)
 
-            raw_tp_levels = self.tp_manager.calculate_tp_levels(
-                entry=entry_price,
-                stop=normalized_sl,
-                side=trade_side,
-            )
+            tp_override_active = isinstance(tp_levels_override, dict) and bool(tp_levels_override)
+            if tp_override_active:
+                raw_tp_levels = dict(tp_levels_override)
+            else:
+                raw_tp_levels = self.tp_manager.calculate_tp_levels(
+                    entry=entry_price,
+                    stop=normalized_sl,
+                    side=trade_side,
+                )
 
             tp_levels = self.tp_manager.normalize_tp_levels(
                 symbol=symbol,
@@ -353,6 +358,11 @@ class TradeExecutor:
                 tp_ok = True  # Базовый лимитный TP1 уже улетел на биржу внутри ордера входа
             # -----------------------------------------------------------------------
 
+            tp_remembered = (
+                (order_type == "Market" and bool(tp_ok))
+                or (order_type == "Limit" and tp_override_active and bool(take_profit_price))
+            )
+
             self.position_manager.remember_position(
                 symbol=symbol,
                 side=trade_side,
@@ -360,13 +370,26 @@ class TradeExecutor:
                 entry_price=entry_price,
                 sl=normalized_sl,
                 position_idx=position_idx,
-                tps_placed=(order_type == "Market" and bool(tp_ok)),
+                tps_placed=tp_remembered,
             )
 
             poi_type = (
                 poi.get("type", "SMC_Zone")
                 if isinstance(poi, dict)
                 else "SMC_Zone"
+            )
+            first_tp_price = None
+            if tp_levels:
+                try:
+                    first_tp_price = float(tp_levels[sorted(tp_levels.keys())[0]])
+                except Exception:
+                    first_tp_price = None
+
+            risk_distance = abs(entry_price - normalized_sl)
+            rr_base = (
+                abs(first_tp_price - entry_price) / risk_distance
+                if first_tp_price is not None and risk_distance > 0
+                else float(config.TRADE_EXECUTION.get("tp_ratios", [1.0, 3.0, 5.0])[0])
             )
 
             trade_data = {
@@ -381,9 +404,7 @@ class TradeExecutor:
                 "risk_pct": float(risk_pct),
                 "poi_type": poi_type,
                 "tp_orders_ok": bool(tp_ok),
-                "rr_base": float(
-                    config.TRADE_EXECUTION.get("tp_ratios", [1.0, 3.0, 5.0])[0]
-                ),
+                "rr_base": float(rr_base),
                 "ts": datetime.now(timezone.utc).isoformat(),
             }
 
@@ -399,6 +420,7 @@ class TradeExecutor:
                 poi_type=poi_type,
                 order_id=order_id,
                 status="PENDING_ORDER" if order_type == "Limit" else "OPEN",
+                rr=float(rr_base),
             )
 
             if not saved:

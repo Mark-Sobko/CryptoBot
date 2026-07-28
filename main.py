@@ -35,6 +35,13 @@ from engine.strategy_coordinator import (
     DECISION_WATCH_ONLY,
     ReadOnlyStrategyCoordinator,
 )
+from engine.strategy_execution import (
+    ALT_EXECUTION_READY,
+    build_single_target_tp_levels,
+    build_strategy_execution_plan,
+    build_strategy_poi,
+    parse_allowed_strategies,
+)
 
 
 class InstitutionalBot:
@@ -96,6 +103,13 @@ class InstitutionalBot:
         self.require_pd_alignment = bool(global_cfg.get("require_pd_alignment", True))
         self.require_liquidity_target = bool(global_cfg.get("require_liquidity_target", True))
         self.multi_strategy_read_only = bool(global_cfg.get("multi_strategy_read_only", True))
+        self.multi_strategy_execution_enabled = bool(
+            global_cfg.get("multi_strategy_execution_enabled", False)
+        )
+        self.multi_strategy_min_rr = float(global_cfg.get("multi_strategy_min_rr", 1.2) or 1.2)
+        self.multi_strategy_allowed_strategies = parse_allowed_strategies(
+            global_cfg.get("multi_strategy_allowed_strategies", None)
+        )
         self.strategy_observation_journal_enabled = bool(
             global_cfg.get("strategy_observation_journal", True)
         )
@@ -229,7 +243,9 @@ class InstitutionalBot:
         symbol: str,
         data: Dict[str, pd.DataFrame],
     ) -> Optional[Dict[str, Any]]:
-        if not self.multi_strategy_read_only:
+        analysis_enabled = bool(getattr(self, "multi_strategy_read_only", False))
+        execution_enabled = bool(getattr(self, "multi_strategy_execution_enabled", False))
+        if not (analysis_enabled or execution_enabled):
             return None
 
         try:
@@ -329,6 +345,229 @@ class InstitutionalBot:
             "plan": decision.get("plan"),
         }
         journal.record("ALT_STRATEGY_DECISION", symbol, payload)
+
+    def _record_strategy_execution_observation(
+        self,
+        symbol: str,
+        execution_plan: Dict[str, Any],
+        *,
+        order_submitted: bool,
+        reason: str = "",
+    ) -> None:
+        journal = getattr(self, "strategy_journal", None)
+        if journal is None:
+            return
+
+        payload = {
+            "source": "ALT_STRATEGY",
+            "read_only": False,
+            "execution_enabled": bool(getattr(self, "execution_enabled", True)),
+            "multi_strategy_execution_enabled": bool(
+                getattr(self, "multi_strategy_execution_enabled", False)
+            ),
+            "demo": config.BYBIT_DEMO,
+            "testnet": config.BYBIT_TESTNET,
+            "order_submitted": bool(order_submitted),
+            "reason": reason,
+            "strategy": execution_plan.get("strategy"),
+            "side": execution_plan.get("side"),
+            "score": execution_plan.get("score"),
+            "threshold": execution_plan.get("threshold"),
+            "order_type": execution_plan.get("order_type"),
+            "entry": execution_plan.get("entry"),
+            "stop_loss": execution_plan.get("stop_loss"),
+            "target": execution_plan.get("target"),
+            "rr": execution_plan.get("rr"),
+        }
+        journal.record("ALT_STRATEGY_EXECUTION", symbol, payload)
+
+    def _maybe_execute_read_only_strategy(
+        self,
+        symbol: str,
+        strategy_result: Optional[Dict[str, Any]],
+        risk_cfg: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        if not self.multi_strategy_execution_enabled:
+            return None
+
+        if not isinstance(strategy_result, dict):
+            return None
+
+        decision = strategy_result.get("decision")
+        if not isinstance(decision, dict):
+            return None
+
+        execution_plan = build_strategy_execution_plan(
+            decision,
+            allowed_strategies=self.multi_strategy_allowed_strategies,
+            min_rr=self.multi_strategy_min_rr,
+        )
+
+        if execution_plan.get("status") != ALT_EXECUTION_READY:
+            reason = str(execution_plan.get("reason", "not_ready"))
+            if reason not in {"decision_not_watch_only", "missing_decision"}:
+                self.logger.info(
+                    f"⏳ [ALT EXEC REJECT] {symbol} | reason={reason} | "
+                    f"strategy={execution_plan.get('strategy')}"
+                )
+            return None
+
+        execution_symbol = str(execution_plan.get("symbol") or symbol)
+        side = str(execution_plan["side"])
+        entry_price = float(execution_plan["entry"])
+        stop_loss = float(execution_plan["stop_loss"])
+        target = float(execution_plan["target"])
+        score = int(execution_plan["score"])
+        order_type = str(execution_plan["order_type"])
+        strategy = str(execution_plan["strategy"])
+
+        if not self._execution_guard_allows_new_order(execution_symbol):
+            return None
+
+        daily_pnl_usd = self.db.get_today_pnl_usd()
+        active_positions = self.ex.get_active_positions()
+
+        is_safe, reason = self.risk_manager.check_safety_filters(
+            daily_pnl_usd=daily_pnl_usd,
+            active_positions=active_positions,
+            symbol=execution_symbol,
+            exchange_manager=self.ex,
+        )
+        if not is_safe:
+            self.logger.warning(
+                f"🛑 [ALT RISK REJECT] {execution_symbol} | "
+                f"strategy={strategy} | reason={reason}"
+            )
+            self._record_strategy_execution_observation(
+                execution_symbol,
+                execution_plan,
+                order_submitted=False,
+                reason=f"risk_reject:{reason}",
+            )
+            return None
+
+        if not self.ex.can_open_new_trade(risk_cfg["max_open_trades"]):
+            self.logger.warning(
+                f"⚠️ [ALT EXEC REJECT] {execution_symbol} | "
+                f"strategy={strategy} | max positions reached: {risk_cfg['max_open_trades']}"
+            )
+            self._record_strategy_execution_observation(
+                execution_symbol,
+                execution_plan,
+                order_submitted=False,
+                reason="max_positions_reached",
+            )
+            return None
+
+        available_balance = self.ex.get_available_balance()
+        qty, corrected_sl = self.risk_manager.calculate_lot_size(
+            side=side,
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            available_balance=available_balance,
+        )
+
+        if qty <= 0:
+            self.logger.warning(
+                f"⚠️ [ALT EXEC REJECT] {execution_symbol} | "
+                f"strategy={strategy} | qty is zero after risk sizing"
+            )
+            self._record_strategy_execution_observation(
+                execution_symbol,
+                execution_plan,
+                order_submitted=False,
+                reason="zero_qty_after_risk_sizing",
+            )
+            return None
+
+        qty = self._cap_qty_by_notional(execution_symbol, qty, entry_price)
+        if qty <= 0:
+            self.logger.warning(
+                f"⚠️ [ALT EXEC REJECT] {execution_symbol} | "
+                f"strategy={strategy} | qty is zero after notional cap"
+            )
+            self._record_strategy_execution_observation(
+                execution_symbol,
+                execution_plan,
+                order_submitted=False,
+                reason="zero_qty_after_notional_cap",
+            )
+            return None
+
+        poi = build_strategy_poi(execution_plan)
+        tp_levels = build_single_target_tp_levels(execution_plan)
+        is_limit_order = order_type == "Limit"
+
+        self.logger.info(
+            f"🧭 [ALT EXEC ROUTE] {execution_symbol} | strategy={strategy} | "
+            f"side={side} | type={order_type} | entry={entry_price} | "
+            f"sl={corrected_sl} | target={target} | rr={execution_plan.get('rr')}"
+        )
+
+        entry_result = self.executor.execute_institutional_entry(
+            symbol=execution_symbol,
+            side=side,
+            poi=poi,
+            score=score,
+            qty=qty,
+            sl=corrected_sl,
+            risk_pct=risk_cfg["risk_per_trade_pct"],
+            order_type=order_type,
+            limit_price=entry_price if is_limit_order else None,
+            tp_levels_override=tp_levels,
+        )
+
+        if not entry_result:
+            self.logger.warning(
+                f"❌ [ALT EXEC FAILED] {execution_symbol} | strategy={strategy}"
+            )
+            self._record_strategy_execution_observation(
+                execution_symbol,
+                execution_plan,
+                order_submitted=False,
+                reason="executor_failed",
+            )
+            return None
+
+        self._record_submitted_order(execution_symbol)
+        status_text = "ALT PENDING LIMIT" if is_limit_order else "ALT ENTERED"
+        self.audit.log_attempt(
+            execution_symbol,
+            score,
+            status_text,
+            f"{strategy} confirmed rr={execution_plan.get('rr')}",
+        )
+        self._record_strategy_execution_observation(
+            execution_symbol,
+            execution_plan,
+            order_submitted=True,
+            reason="submitted",
+        )
+
+        metrics_data = {
+            "adx": getattr(self.filters, "last_adx", 0.0),
+            "er": getattr(self.filters, "last_er", 0.0),
+            "atr_pct": getattr(self.filters, "last_atr_pct", 0.0),
+            "rel_vol": getattr(self.filters, "last_rel_vol", 0.0),
+        }
+        self.notifier.notify_signal(
+            symbol=execution_symbol,
+            score=score,
+            side=side,
+            price=entry_price,
+            sl=corrected_sl,
+            tp=target,
+            metrics=metrics_data,
+        )
+
+        return {
+            "symbol": execution_symbol,
+            "status": "ALT_EXECUTED",
+            "side": side,
+            "score": score,
+            "reason": f"{strategy} submitted",
+            "rel_vol": metrics_data["rel_vol"],
+        }
 
     def _log_read_only_strategy_decision(
         self,
@@ -575,6 +814,16 @@ class InstitutionalBot:
                     continue
 
                 read_only_strategy_result = self._analyze_read_only_strategies(symbol, data)
+                alt_execution_summary = self._maybe_execute_read_only_strategy(
+                    symbol,
+                    read_only_strategy_result,
+                    risk_cfg,
+                )
+                if alt_execution_summary:
+                    summary_list.append(alt_execution_summary)
+                    time.sleep(2)
+                    continue
+
                 trend = TrendEngine.get_direction(data["1h"], data["15m"])
 
                 if not self.filters.is_market_suitable(data["1h"]):

@@ -72,6 +72,14 @@ def _env_int(name: str, default: int) -> int:
     except ValueError as exc:
         raise ValueError(f"[CONFIG CRITICAL] {name} must be integer.") from exc
 
+
+def _env_csv(name: str, default: List[str]) -> List[str]:
+    value = os.getenv(name)
+    if value is None or value.strip() == "":
+        return list(default)
+
+    return [part.strip().upper() for part in value.split(",") if part.strip()]
+
 # --- [SMC & ANALYTICS CONFIG] ---
 class SMCConfig(TypedDict):
     lookback_bars: int
@@ -114,6 +122,13 @@ SCORE_MODIFIERS: Final[Dict[str, int]] = {
     "high_vol_penalty": -20,
 }
 
+MULTI_STRATEGY_EXECUTION_NAMES: Final[List[str]] = [
+    "MEAN_REVERSION",
+    "BREAKOUT",
+    "TREND_PULLBACK",
+    "VOLATILITY_EXPANSION",
+]
+
 # --- [RISK MANAGEMENT] ---
 class RiskConfig(TypedDict):
     risk_per_trade_pct: float
@@ -152,6 +167,12 @@ RISK_MANAGEMENT: Final[Dict[str, Any]] = {
         "require_pd_alignment": _env_bool("REQUIRE_PD_ALIGNMENT", True),
         "require_liquidity_target": _env_bool("REQUIRE_LIQUIDITY_TARGET", True),
         "multi_strategy_read_only": _env_bool("MULTI_STRATEGY_READ_ONLY", True),
+        "multi_strategy_execution_enabled": _env_bool("MULTI_STRATEGY_EXECUTION_ENABLED", False),
+        "multi_strategy_min_rr": _env_float("MULTI_STRATEGY_MIN_RR", 1.2),
+        "multi_strategy_allowed_strategies": _env_csv(
+            "MULTI_STRATEGY_ALLOWED_STRATEGIES",
+            MULTI_STRATEGY_EXECUTION_NAMES,
+        ),
         "strategy_observation_journal": _env_bool("STRATEGY_OBSERVATION_JOURNAL", True),
         "leverage": 10,
         "margin_type": "ISOLATED",
@@ -271,6 +292,7 @@ def _validate_config() -> None:
         "require_pd_alignment",
         "require_liquidity_target",
         "multi_strategy_read_only",
+        "multi_strategy_execution_enabled",
         "execution_enabled",
         "strategy_observation_journal",
     ]
@@ -300,6 +322,19 @@ def _validate_config() -> None:
     max_drawdown_limit_pct = float(global_cfg.get("max_drawdown_limit_pct", 10.0))
     if not (0 <= max_drawdown_limit_pct <= 100):
         raise ValueError("[CONFIG CRITICAL] max_drawdown_limit_pct must be in [0, 100].")
+
+    multi_strategy_min_rr = float(global_cfg.get("multi_strategy_min_rr", 1.2))
+    if not (0 < multi_strategy_min_rr <= 20):
+        raise ValueError("[CONFIG CRITICAL] multi_strategy_min_rr must be in (0, 20].")
+
+    allowed_strategies = global_cfg.get("multi_strategy_allowed_strategies", [])
+    if not isinstance(allowed_strategies, list) or not allowed_strategies:
+        raise ValueError("[CONFIG CRITICAL] multi_strategy_allowed_strategies must be a non-empty list.")
+
+    unknown_strategies = set(allowed_strategies).difference(MULTI_STRATEGY_EXECUTION_NAMES)
+    if unknown_strategies:
+        joined = ",".join(sorted(unknown_strategies))
+        raise ValueError(f"[CONFIG CRITICAL] unknown multi-strategy names: {joined}")
 
 # Запускаем проверку при импорте модуля
 _validate_config()

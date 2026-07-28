@@ -37,9 +37,15 @@ class DatabaseSync:
         poi_type: str,
         order_id: str = "",
         status: str = "OPEN",
+        rr: Optional[float] = None,
     ) -> bool:
         try:
             db = self._get_db()
+            rr_value = (
+                float(rr)
+                if rr is not None
+                else float(config.TRADE_EXECUTION.get("tp_ratios", [1.5, 3.0, 5.0])[0])
+            )
 
             db_data: Dict[str, Any] = {
                 "entry_time": datetime.now(timezone.utc).isoformat(),
@@ -52,7 +58,7 @@ class DatabaseSync:
                 "pnl_pct": 0.0,
                 "score": int(score),
                 "poi_type": str(poi_type),
-                "rr": float(config.TRADE_EXECUTION.get("tp_ratios", [1.5, 3.0, 5.0])[0]),
+                "rr": rr_value,
                 "sl": float(sl),
                 "order_id": str(order_id),
                 "status": str(status),
