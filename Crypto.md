@@ -94,8 +94,8 @@ Guarded `main.py` launch profiles:
 # Guarded SMC + selected alternative-strategy demo trading:
 .venv/bin/python scripts/run_main_profile.py --profile demo-multi --runtime-minutes 30 --max-order-notional 25
 
-# Optional account-state preflight before launch:
-.venv/bin/python scripts/run_main_profile.py --profile demo-multi --exchange-preflight --dry-run
+# Optional account-state preflight before launch, without starting main.py:
+.venv/bin/python scripts/preflight_main.py --profile demo-multi --exchange
 
 # start.sh delegates to the same launch profiles:
 BOT_PROFILE=demo-smc ./start.sh
