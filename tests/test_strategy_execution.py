@@ -13,6 +13,7 @@ from engine.strategy_execution import (
     build_strategy_execution_plan,
     build_strategy_poi,
     parse_allowed_strategies,
+    parse_allowed_order_types,
 )
 
 
@@ -44,6 +45,9 @@ class StrategyExecutionTests(unittest.TestCase):
         self.assertIn("BREAKOUT", allowed)
         self.assertIn("TREND_PULLBACK", allowed)
         self.assertIn("VOLATILITY_EXPANSION", allowed)
+
+    def test_parse_allowed_order_types_normalizes_canonical_names(self):
+        self.assertEqual(parse_allowed_order_types("limit,market"), {"Limit", "Market"})
 
     def test_build_strategy_execution_plan_accepts_valid_watch_decision(self):
         plan = build_strategy_execution_plan(
@@ -85,6 +89,58 @@ class StrategyExecutionTests(unittest.TestCase):
             build_strategy_execution_plan(bad_direction, min_rr=1.2)["reason"],
             "invalid_directional_plan",
         )
+
+    def test_build_strategy_execution_plan_applies_strategy_policy(self):
+        policy = {
+            "MEAN_REVERSION": {
+                "min_rr": 3.5,
+                "max_notional_usd": 10.0,
+                "risk_pct_multiplier": 0.5,
+                "cooldown_minutes": 30.0,
+                "max_hold_minutes": 120.0,
+                "allowed_order_types": ["LIMIT"],
+            }
+        }
+
+        low_policy_rr = build_strategy_execution_plan(
+            _decision(),
+            min_rr=1.2,
+            strategy_policies=policy,
+        )
+        self.assertEqual(low_policy_rr["status"], ALT_EXECUTION_REJECTED)
+        self.assertEqual(low_policy_rr["reason"], "rr_below_strategy_min")
+
+        market_order = _decision(
+            plan={
+                "order_type": "Market",
+                "entry": 0.154,
+                "stop_loss": 0.156,
+                "target": 0.148,
+                "rr": 4.0,
+            }
+        )
+        self.assertEqual(
+            build_strategy_execution_plan(market_order, strategy_policies=policy)["reason"],
+            "order_type_not_allowed",
+        )
+
+        valid = _decision(
+            plan={
+                "order_type": "Limit",
+                "entry": 0.154,
+                "stop_loss": 0.156,
+                "target": 0.146,
+                "rr": 4.0,
+            }
+        )
+        plan = build_strategy_execution_plan(valid, strategy_policies=policy)
+        self.assertEqual(plan["status"], ALT_EXECUTION_READY)
+        self.assertEqual(plan["policy_min_rr"], 3.5)
+        self.assertEqual(plan["max_notional_usd"], 10.0)
+        self.assertEqual(plan["risk_pct_multiplier"], 0.5)
+        self.assertEqual(plan["cooldown_minutes"], 30.0)
+        self.assertEqual(plan["max_hold_minutes"], 120.0)
+        self.assertEqual(plan["allowed_order_types"], ["Limit"])
 
     def test_poi_and_single_target_helpers_use_strategy_plan_values(self):
         plan = build_strategy_execution_plan(_decision(), min_rr=1.2)

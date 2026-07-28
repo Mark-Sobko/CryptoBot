@@ -47,6 +47,12 @@ def compact_recent(entry: dict[str, Any]) -> dict[str, Any]:
         "score": data.get("score"),
         "threshold": data.get("threshold"),
         "reason": data.get("reason"),
+        "order_submitted": data.get("order_submitted"),
+        "policy_min_rr": data.get("policy_min_rr"),
+        "max_notional_usd": data.get("max_notional_usd"),
+        "risk_pct_multiplier": data.get("risk_pct_multiplier"),
+        "cooldown_minutes": data.get("cooldown_minutes"),
+        "max_hold_minutes": data.get("max_hold_minutes"),
     }
     plan = data.get("plan")
     if isinstance(plan, dict):
@@ -70,6 +76,10 @@ def summarize_entries(entries: list[dict[str, Any]], *, top: int = 10) -> dict[s
     watch_entries: list[dict[str, Any]] = []
     conflict_entries: list[dict[str, Any]] = []
     rejected_entries: list[dict[str, Any]] = []
+    execution_entries: list[dict[str, Any]] = []
+    execution_submitted_counts: Counter[str] = Counter()
+    execution_rejected_counts: Counter[str] = Counter()
+    execution_reason_counts: Counter[str] = Counter()
 
     first_ts = ""
     last_ts = ""
@@ -106,6 +116,16 @@ def summarize_entries(entries: list[dict[str, Any]], *, top: int = 10) -> dict[s
         elif int(data.get("rejected_candidate_count", 0) or 0) > 0:
             rejected_entries.append(compact_recent(entry))
 
+        if event_type == "ALT_STRATEGY_EXECUTION":
+            execution_entries.append(compact_recent(entry))
+            execution_strategy = strategy or "UNKNOWN"
+            if bool(data.get("order_submitted", False)):
+                execution_submitted_counts[execution_strategy] += 1
+            else:
+                execution_rejected_counts[execution_strategy] += 1
+            if reason:
+                execution_reason_counts[reason] += 1
+
     return {
         "entries_total": len(entries),
         "first_ts": first_ts,
@@ -119,9 +139,14 @@ def summarize_entries(entries: list[dict[str, Any]], *, top: int = 10) -> dict[s
         "watch_total": len(watch_entries),
         "conflict_total": len(conflict_entries),
         "rejected_candidate_total": len(rejected_entries),
+        "execution_total": len(execution_entries),
+        "execution_submitted_counts": _sorted_counter(execution_submitted_counts, top=top),
+        "execution_rejected_counts": _sorted_counter(execution_rejected_counts, top=top),
+        "execution_reason_counts": _sorted_counter(execution_reason_counts, top=top),
         "recent_watch": watch_entries[-top:],
         "recent_conflicts": conflict_entries[-top:],
         "recent_rejections": rejected_entries[-top:],
+        "recent_executions": execution_entries[-top:],
     }
 
 

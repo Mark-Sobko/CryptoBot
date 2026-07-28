@@ -26,9 +26,27 @@ class StatsAnalyzer:
         conn.row_factory = sqlite3.Row
         return conn
 
+    @staticmethod
+    def _table_columns(conn, table: str) -> set[str]:
+        cursor = conn.execute(f"PRAGMA table_info({table})")
+        return {str(row["name"]) for row in cursor.fetchall()}
+
     def generate_report_chunks(self) -> List[str]:
         try:
-            query = """
+            with self._get_connection() as conn:
+                columns = self._table_columns(conn, "trades")
+                strategy_select = (
+                    "strategy"
+                    if "strategy" in columns
+                    else "'SMC' AS strategy"
+                )
+                source_select = (
+                    "source"
+                    if "source" in columns
+                    else "'SMC' AS source"
+                )
+
+                query = f"""
                 SELECT
                     id,
                     symbol,
@@ -42,13 +60,13 @@ class StatsAnalyzer:
                     pnl_pct,
                     score,
                     poi_type,
+                    {strategy_select},
+                    {source_select},
                     rr
                 FROM trades
                 WHERE status = 'CLOSED'
                 ORDER BY exit_time ASC
-            """
-
-            with self._get_connection() as conn:
+                """
                 df = pd.read_sql_query(query, conn)
 
             if df.empty:
@@ -59,6 +77,7 @@ class StatsAnalyzer:
             df["pnl_usd"] = pd.to_numeric(df["pnl_usd"], errors="coerce").fillna(0.0)
             df["pnl_pct"] = pd.to_numeric(df["pnl_pct"], errors="coerce").fillna(0.0)
             df["score"] = pd.to_numeric(df["score"], errors="coerce").fillna(0).astype(int)
+            df["strategy"] = df["strategy"].fillna("SMC").astype(str).replace("", "SMC")
 
             df = df.dropna(subset=["exit_time"]).sort_values("exit_time").reset_index(drop=True)
 
@@ -179,6 +198,41 @@ class StatsAnalyzer:
                 "📊 <b>РЕЗУЛЬТАТИВНОСТЬ ИНСТРУМЕНТОВ</b>\n"
                 "----------------------------------------\n"
                 f"<pre>{html.escape(table_3)}</pre>"
+            )
+
+            strategy_rows = []
+            for strategy, group in df.groupby("strategy"):
+                group_wins = group[group["pnl_usd"] > 0]
+                group_losses = group[group["pnl_usd"] < 0]
+                group_gross_profit = float(group_wins["pnl_usd"].sum())
+                group_gross_loss = float(abs(group_losses["pnl_usd"].sum()))
+                if group_gross_loss == 0:
+                    group_profit_factor = "∞" if group_gross_profit > 0 else "0.00"
+                else:
+                    group_profit_factor = f"{group_gross_profit / group_gross_loss:.2f}"
+
+                strategy_rows.append(
+                    [
+                        strategy,
+                        len(group),
+                        float(group["pnl_usd"].sum()),
+                        (len(group_wins) / len(group) * 100) if len(group) else 0.0,
+                        group_profit_factor,
+                    ]
+                )
+
+            strategy_rows.sort(key=lambda row: row[2], reverse=True)
+            table_4 = tabulate(
+                strategy_rows,
+                headers=["Стратегия", "Сделки", "PnL", "Win%", "PF"],
+                tablefmt="simple",
+                floatfmt=("", ".0f", ".2f", ".1f", ""),
+            )
+
+            chunks.append(
+                "📊 <b>РЕЗУЛЬТАТИВНОСТЬ СТРАТЕГИЙ</b>\n"
+                "----------------------------------------\n"
+                f"<pre>{html.escape(table_4)}</pre>"
             )
 
             return chunks

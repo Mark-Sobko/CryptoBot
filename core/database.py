@@ -74,6 +74,9 @@ class TradeDatabase:
                     pnl_pct REAL DEFAULT 0.0,
                     score INTEGER,
                     poi_type TEXT,
+                    strategy TEXT DEFAULT 'SMC',
+                    source TEXT DEFAULT 'SMC',
+                    max_hold_minutes REAL DEFAULT 0.0,
                     rr REAL,
                     status TEXT DEFAULT 'OPEN'
                 )
@@ -99,6 +102,7 @@ class TradeDatabase:
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_order_id ON trades(order_id)")
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_entry_time ON trades(entry_time)")
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_exit_time ON trades(exit_time)")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_strategy_status ON trades(strategy, status)")
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_scan_ts ON scan_history(ts)")
             self.conn.commit()
 
@@ -121,6 +125,15 @@ class TradeDatabase:
 
             if "stop_loss" not in columns:
                 self.conn.execute("ALTER TABLE trades ADD COLUMN stop_loss REAL")
+
+            if "strategy" not in columns:
+                self.conn.execute("ALTER TABLE trades ADD COLUMN strategy TEXT DEFAULT 'SMC'")
+
+            if "source" not in columns:
+                self.conn.execute("ALTER TABLE trades ADD COLUMN source TEXT DEFAULT 'SMC'")
+
+            if "max_hold_minutes" not in columns:
+                self.conn.execute("ALTER TABLE trades ADD COLUMN max_hold_minutes REAL DEFAULT 0.0")
 
             self.conn.commit()
 
@@ -160,10 +173,13 @@ class TradeDatabase:
                         qty,
                         score,
                         poi_type,
+                        strategy,
+                        source,
+                        max_hold_minutes,
                         rr,
                         status
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         order_id,
@@ -175,6 +191,9 @@ class TradeDatabase:
                         float(data["qty"]),
                         int(data.get("score", 0)),
                         str(data.get("poi_type", "SMC_Zone")),
+                        str(data.get("strategy", "SMC") or "SMC"),
+                        str(data.get("source", "SMC") or "SMC"),
+                        float(data.get("max_hold_minutes", 0.0) or 0.0),
                         float(data.get("rr", 0.0)),
                         status,
                     ),

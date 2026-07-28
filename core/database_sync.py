@@ -38,6 +38,9 @@ class DatabaseSync:
         order_id: str = "",
         status: str = "OPEN",
         rr: Optional[float] = None,
+        strategy: str = "SMC",
+        source: str = "SMC",
+        max_hold_minutes: float = 0.0,
     ) -> bool:
         try:
             db = self._get_db()
@@ -58,6 +61,9 @@ class DatabaseSync:
                 "pnl_pct": 0.0,
                 "score": int(score),
                 "poi_type": str(poi_type),
+                "strategy": str(strategy or "SMC"),
+                "source": str(source or "SMC"),
+                "max_hold_minutes": float(max_hold_minutes or 0.0),
                 "rr": rr_value,
                 "sl": float(sl),
                 "order_id": str(order_id),

@@ -212,6 +212,9 @@ class TradeExecutor:
         order_type: str = "Market",          # Внедряем тип ордера
         limit_price: Optional[float] = None,  # Внедряем цену исполнения
         tp_levels_override: Optional[Dict[str, float]] = None,
+        strategy: str = "SMC",
+        source: str = "SMC",
+        max_hold_minutes: float = 0.0,
     ) -> Optional[Dict[str, Any]]:
         try:
             order_type = "Limit" if str(order_type).lower() == "limit" else "Market"
@@ -362,6 +365,7 @@ class TradeExecutor:
                 (order_type == "Market" and bool(tp_ok))
                 or (order_type == "Limit" and tp_override_active and bool(take_profit_price))
             )
+            entry_ts = datetime.now(timezone.utc).isoformat()
 
             self.position_manager.remember_position(
                 symbol=symbol,
@@ -371,6 +375,10 @@ class TradeExecutor:
                 sl=normalized_sl,
                 position_idx=position_idx,
                 tps_placed=tp_remembered,
+                strategy=str(strategy or "SMC"),
+                source=str(source or "SMC"),
+                entry_time=entry_ts,
+                max_hold_minutes=float(max_hold_minutes or 0.0),
             )
 
             poi_type = (
@@ -403,9 +411,12 @@ class TradeExecutor:
                 "score": int(score),
                 "risk_pct": float(risk_pct),
                 "poi_type": poi_type,
+                "strategy": str(strategy or "SMC"),
+                "source": str(source or "SMC"),
+                "max_hold_minutes": float(max_hold_minutes or 0.0),
                 "tp_orders_ok": bool(tp_ok),
                 "rr_base": float(rr_base),
-                "ts": datetime.now(timezone.utc).isoformat(),
+                "ts": entry_ts,
             }
 
             self.audit.log_trade_event("ORDER_EXECUTED", symbol, trade_data)
@@ -421,6 +432,9 @@ class TradeExecutor:
                 order_id=order_id,
                 status="PENDING_ORDER" if order_type == "Limit" else "OPEN",
                 rr=float(rr_base),
+                strategy=str(strategy or "SMC"),
+                source=str(source or "SMC"),
+                max_hold_minutes=float(max_hold_minutes or 0.0),
             )
 
             if not saved:

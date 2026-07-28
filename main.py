@@ -110,12 +110,17 @@ class InstitutionalBot:
         self.multi_strategy_allowed_strategies = parse_allowed_strategies(
             global_cfg.get("multi_strategy_allowed_strategies", None)
         )
+        self.multi_strategy_execution_policy = global_cfg.get(
+            "multi_strategy_execution_policy",
+            {},
+        )
         self.strategy_observation_journal_enabled = bool(
             global_cfg.get("strategy_observation_journal", True)
         )
         self.last_drawdown_pct = 0.0
         self.orders_submitted_this_run = 0
         self.orders_submitted_this_cycle = 0
+        self.strategy_execution_last_submit: Dict[tuple[str, str], datetime.datetime] = {}
 
     def _validate_runtime_environment(self) -> None:
         global_cfg = config.RISK_MANAGEMENT.get("global", {})
@@ -185,23 +190,39 @@ class InstitutionalBot:
 
         return True
 
-    def _cap_qty_by_notional(self, symbol: str, qty: float, entry_price: float) -> float:
-        if self.max_order_notional_usd <= 0:
+    def _cap_qty_by_notional_limit(
+        self,
+        symbol: str,
+        qty: float,
+        entry_price: float,
+        max_notional_usd: float,
+        label: str,
+    ) -> float:
+        if max_notional_usd <= 0:
             return qty
 
         if not all(math.isfinite(value) and value > 0 for value in [qty, entry_price]):
             return 0.0
 
         notional = qty * entry_price
-        if notional <= self.max_order_notional_usd:
+        if notional <= max_notional_usd:
             return qty
 
-        capped_qty = self.max_order_notional_usd / entry_price
+        capped_qty = max_notional_usd / entry_price
         self.logger.warning(
-            f"🛡️ [NOTIONAL GUARD] {symbol} qty reduced by max_order_notional_usd: "
-            f"{notional:.2f} -> {self.max_order_notional_usd:.2f} USDT"
+            f"🛡️ [NOTIONAL GUARD] {symbol} qty reduced by {label}: "
+            f"{notional:.2f} -> {max_notional_usd:.2f} USDT"
         )
         return capped_qty
+
+    def _cap_qty_by_notional(self, symbol: str, qty: float, entry_price: float) -> float:
+        return self._cap_qty_by_notional_limit(
+            symbol,
+            qty,
+            entry_price,
+            self.max_order_notional_usd,
+            "max_order_notional_usd",
+        )
 
     def _record_submitted_order(self, symbol: str) -> None:
         self.orders_submitted_this_run += 1
@@ -210,6 +231,50 @@ class InstitutionalBot:
             f"🧮 [ORDER GUARD] {symbol} submitted. "
             f"run={self.orders_submitted_this_run}/{self.max_orders_per_run or 'unlimited'}, "
             f"cycle={self.orders_submitted_this_cycle}/{self.max_orders_per_cycle or 'unlimited'}"
+        )
+
+    def _strategy_execution_cooldown_allows(
+        self,
+        symbol: str,
+        strategy: str,
+        cooldown_minutes: float,
+    ) -> bool:
+        if cooldown_minutes <= 0:
+            return True
+
+        last_submit = getattr(self, "strategy_execution_last_submit", None)
+        if last_submit is None:
+            self.strategy_execution_last_submit = {}
+            last_submit = self.strategy_execution_last_submit
+
+        key = (symbol.upper(), strategy.upper())
+        last_seen = last_submit.get(key)
+        if last_seen is None:
+            return True
+
+        if last_seen.tzinfo is None:
+            last_seen = last_seen.replace(tzinfo=datetime.timezone.utc)
+
+        elapsed_minutes = (
+            datetime.datetime.now(datetime.timezone.utc) - last_seen
+        ).total_seconds() / 60.0
+        remaining = cooldown_minutes - elapsed_minutes
+        if remaining <= 0:
+            return True
+
+        self.logger.info(
+            f"⏳ [ALT EXEC COOLDOWN] {symbol} | strategy={strategy} | "
+            f"remaining={remaining:.1f} min"
+        )
+        return False
+
+    def _record_strategy_execution_submit(self, symbol: str, strategy: str) -> None:
+        last_submit = getattr(self, "strategy_execution_last_submit", None)
+        if last_submit is None:
+            self.strategy_execution_last_submit = {}
+
+        self.strategy_execution_last_submit[(symbol.upper(), strategy.upper())] = (
+            datetime.datetime.now(datetime.timezone.utc)
         )
 
     @staticmethod
@@ -378,6 +443,11 @@ class InstitutionalBot:
             "stop_loss": execution_plan.get("stop_loss"),
             "target": execution_plan.get("target"),
             "rr": execution_plan.get("rr"),
+            "policy_min_rr": execution_plan.get("policy_min_rr"),
+            "max_notional_usd": execution_plan.get("max_notional_usd"),
+            "risk_pct_multiplier": execution_plan.get("risk_pct_multiplier"),
+            "cooldown_minutes": execution_plan.get("cooldown_minutes"),
+            "max_hold_minutes": execution_plan.get("max_hold_minutes"),
         }
         journal.record("ALT_STRATEGY_EXECUTION", symbol, payload)
 
@@ -401,6 +471,7 @@ class InstitutionalBot:
             decision,
             allowed_strategies=self.multi_strategy_allowed_strategies,
             min_rr=self.multi_strategy_min_rr,
+            strategy_policies=getattr(self, "multi_strategy_execution_policy", {}),
         )
 
         if execution_plan.get("status") != ALT_EXECUTION_READY:
@@ -420,6 +491,23 @@ class InstitutionalBot:
         score = int(execution_plan["score"])
         order_type = str(execution_plan["order_type"])
         strategy = str(execution_plan["strategy"])
+        strategy_max_notional_usd = float(execution_plan.get("max_notional_usd", 0.0) or 0.0)
+        risk_pct_multiplier = float(execution_plan.get("risk_pct_multiplier", 1.0) or 1.0)
+        cooldown_minutes = float(execution_plan.get("cooldown_minutes", 0.0) or 0.0)
+        max_hold_minutes = float(execution_plan.get("max_hold_minutes", 0.0) or 0.0)
+
+        if not self._strategy_execution_cooldown_allows(
+            execution_symbol,
+            strategy,
+            cooldown_minutes,
+        ):
+            self._record_strategy_execution_observation(
+                execution_symbol,
+                execution_plan,
+                order_submitted=False,
+                reason="strategy_cooldown",
+            )
+            return None
 
         if not self._execution_guard_allows_new_order(execution_symbol):
             return None
@@ -480,7 +568,23 @@ class InstitutionalBot:
             )
             return None
 
+        if risk_pct_multiplier < 1.0:
+            original_qty = qty
+            qty *= risk_pct_multiplier
+            self.logger.info(
+                f"🛡️ [ALT RISK POLICY] {execution_symbol} | strategy={strategy} | "
+                f"qty reduced by risk_pct_multiplier={risk_pct_multiplier:.2f}: "
+                f"{original_qty:.8f} -> {qty:.8f}"
+            )
+
         qty = self._cap_qty_by_notional(execution_symbol, qty, entry_price)
+        qty = self._cap_qty_by_notional_limit(
+            execution_symbol,
+            qty,
+            entry_price,
+            strategy_max_notional_usd,
+            f"{strategy}_MAX_NOTIONAL_USD",
+        )
         if qty <= 0:
             self.logger.warning(
                 f"⚠️ [ALT EXEC REJECT] {execution_symbol} | "
@@ -511,10 +615,13 @@ class InstitutionalBot:
             score=score,
             qty=qty,
             sl=corrected_sl,
-            risk_pct=risk_cfg["risk_per_trade_pct"],
+            risk_pct=float(risk_cfg["risk_per_trade_pct"]) * risk_pct_multiplier,
             order_type=order_type,
             limit_price=entry_price if is_limit_order else None,
             tp_levels_override=tp_levels,
+            strategy=strategy,
+            source="ALT_STRATEGY",
+            max_hold_minutes=max_hold_minutes,
         )
 
         if not entry_result:
@@ -530,6 +637,7 @@ class InstitutionalBot:
             return None
 
         self._record_submitted_order(execution_symbol)
+        self._record_strategy_execution_submit(execution_symbol, strategy)
         status_text = "ALT PENDING LIMIT" if is_limit_order else "ALT ENTERED"
         self.audit.log_attempt(
             execution_symbol,

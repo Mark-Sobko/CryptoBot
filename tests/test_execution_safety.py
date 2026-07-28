@@ -113,6 +113,33 @@ class ExecutionSafetyTests(unittest.TestCase):
 
             db.close()
 
+    def test_database_persists_strategy_metadata(self):
+        from core.database import TradeDatabase
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = TradeDatabase(os.path.join(tmpdir, "bot_memory.db"))
+            db.add_trade(
+                {
+                    "symbol": "WIFUSDT",
+                    "side": "SHORT",
+                    "entry": 0.154,
+                    "qty": 10.0,
+                    "sl": 0.156,
+                    "score": 82,
+                    "poi_type": "ALT_MEAN_REVERSION",
+                    "strategy": "MEAN_REVERSION",
+                    "source": "ALT_STRATEGY",
+                    "max_hold_minutes": 120.0,
+                    "status": "PENDING_ORDER",
+                }
+            )
+
+            trade = db.get_last_trade("WIFUSDT")
+            self.assertEqual(trade["strategy"], "MEAN_REVERSION")
+            self.assertEqual(trade["source"], "ALT_STRATEGY")
+            self.assertEqual(trade["max_hold_minutes"], 120.0)
+            db.close()
+
     def test_database_reconciles_open_trade_qty_after_partial_fill_grows(self):
         from core.database import TradeDatabase
 
@@ -657,6 +684,9 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertTrue(all(value is not None for value in session.order_params.values()))
         self.assertEqual(session.order_params["timeInForce"], "GTC")
         self.assertEqual(executor.database_sync.saved[0]["status"], "PENDING_ORDER")
+        self.assertEqual(executor.database_sync.saved[0]["strategy"], "SMC")
+        self.assertEqual(executor.database_sync.saved[0]["source"], "SMC")
+        self.assertEqual(executor.database_sync.saved[0]["max_hold_minutes"], 0.0)
 
     def test_executor_limit_order_uses_strategy_tp_override(self):
         from core.executor import TradeExecutor
@@ -940,11 +970,81 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertEqual(call_kwargs["tp_levels_override"], {"tp1": 0.148})
         self.assertEqual(call_kwargs["poi"]["type"], "ALT_MEAN_REVERSION")
         self.assertEqual(call_kwargs["sl"], 0.156)
+        self.assertEqual(call_kwargs["strategy"], "MEAN_REVERSION")
+        self.assertEqual(call_kwargs["source"], "ALT_STRATEGY")
         bot.notifier.notify_signal.assert_called_once()
         event_type, symbol, payload = bot.strategy_journal.record.call_args.args
         self.assertEqual(event_type, "ALT_STRATEGY_EXECUTION")
         self.assertEqual(symbol, "WIFUSDT")
         self.assertTrue(payload["order_submitted"])
+
+    def test_main_multi_strategy_execution_applies_strategy_policy_caps(self):
+        InstitutionalBot = self._import_institutional_bot()
+
+        bot = InstitutionalBot.__new__(InstitutionalBot)
+        bot.logger = logging.getLogger("test.InstitutionalBot")
+        bot.multi_strategy_execution_enabled = True
+        bot.multi_strategy_allowed_strategies = {"MEAN_REVERSION"}
+        bot.multi_strategy_min_rr = 1.2
+        bot.multi_strategy_execution_policy = {
+            "MEAN_REVERSION": {
+                "min_rr": 1.2,
+                "max_notional_usd": 10.0,
+                "risk_pct_multiplier": 0.5,
+                "cooldown_minutes": 60.0,
+                "max_hold_minutes": 120.0,
+                "allowed_order_types": ["LIMIT"],
+            }
+        }
+        bot.strategy_execution_last_submit = {}
+        bot.execution_enabled = True
+        bot.max_orders_per_run = 0
+        bot.max_orders_per_cycle = 0
+        bot.orders_submitted_this_run = 0
+        bot.orders_submitted_this_cycle = 0
+        bot.max_order_notional_usd = 0.0
+        bot.db = mock.Mock()
+        bot.db.get_today_pnl_usd.return_value = 0.0
+        bot.ex = mock.Mock()
+        bot.ex.get_active_positions.return_value = []
+        bot.ex.can_open_new_trade.return_value = True
+        bot.ex.get_available_balance.return_value = 1000.0
+        bot.risk_manager = mock.Mock()
+        bot.risk_manager.check_safety_filters.return_value = (True, "SAFE")
+        bot.risk_manager.calculate_lot_size.return_value = (1000.0, 0.156)
+        bot.executor = mock.Mock()
+        bot.executor.execute_institutional_entry.return_value = {"retCode": 0}
+        bot.audit = mock.Mock()
+        bot.strategy_journal = mock.Mock()
+        bot.filters = types.SimpleNamespace(
+            last_adx=12.0,
+            last_er=0.2,
+            last_atr_pct=0.5,
+            last_rel_vol=0.8,
+        )
+        bot.notifier = mock.Mock()
+
+        result = bot._maybe_execute_read_only_strategy(
+            "WIFUSDT",
+            self._alt_strategy_result(),
+            {"max_open_trades": 1, "risk_per_trade_pct": 1.0},
+        )
+
+        self.assertEqual(result["status"], "ALT_EXECUTED")
+        call_kwargs = bot.executor.execute_institutional_entry.call_args.kwargs
+        self.assertAlmostEqual(call_kwargs["qty"], 10.0 / 0.154)
+        self.assertAlmostEqual(call_kwargs["risk_pct"], 0.5)
+        self.assertEqual(call_kwargs["max_hold_minutes"], 120.0)
+        self.assertIn(("WIFUSDT", "MEAN_REVERSION"), bot.strategy_execution_last_submit)
+
+        self.assertIsNone(
+            bot._maybe_execute_read_only_strategy(
+                "WIFUSDT",
+                self._alt_strategy_result(),
+                {"max_open_trades": 1, "risk_per_trade_pct": 1.0},
+            )
+        )
+        self.assertEqual(bot.executor.execute_institutional_entry.call_count, 1)
 
     def test_main_multi_strategy_execution_respects_global_execution_guard(self):
         InstitutionalBot = self._import_institutional_bot()

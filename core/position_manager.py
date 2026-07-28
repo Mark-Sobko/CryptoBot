@@ -46,6 +46,10 @@ class PositionManager:
         sl: float,
         position_idx: int,
         tps_placed: bool = False,
+        strategy: str = "SMC",
+        source: str = "SMC",
+        entry_time: Optional[str] = None,
+        max_hold_minutes: float = 0.0,
     ) -> None:
         self.position_cache[symbol] = {
             "symbol": symbol,
@@ -56,6 +60,10 @@ class PositionManager:
             "position_idx": int(position_idx),
             "tps_placed": bool(tps_placed),
             "tp_qty": float(initial_qty) if tps_placed else 0.0,
+            "strategy": str(strategy or "SMC"),
+            "source": str(source or "SMC"),
+            "entry_time": entry_time,
+            "max_hold_minutes": float(max_hold_minutes or 0.0),
         }
 
     def _api_call(self, func, *args, **kwargs) -> Optional[Dict[str, Any]]:
@@ -99,6 +107,10 @@ class PositionManager:
             sl=float(trade.get("stop_loss", 0.0) or 0.0),
             position_idx=self.get_position_idx(side),
             tps_placed=False,
+            strategy=str(trade.get("strategy", "SMC") or "SMC"),
+            source=str(trade.get("source", "SMC") or "SMC"),
+            entry_time=trade.get("entry_time"),
+            max_hold_minutes=float(trade.get("max_hold_minutes", 0.0) or 0.0),
         )
         return self.position_cache.get(symbol)
 

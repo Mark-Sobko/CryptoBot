@@ -55,6 +55,54 @@ class StrategyObservationJournalTests(unittest.TestCase):
             self.assertEqual(summary["symbol_counts"]["WIFUSDT"], 1)
             self.assertEqual(summary["recent_watch"][0]["plan"]["rr"], 2.5)
 
+    def test_summary_reports_alt_execution_policy_counts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "strategy.jsonl"
+            journal = StrategyObservationJournal(path)
+
+            self.assertTrue(
+                journal.record(
+                    "ALT_STRATEGY_EXECUTION",
+                    "WIFUSDT",
+                    {
+                        "strategy": "MEAN_REVERSION",
+                        "side": "SHORT",
+                        "score": 82,
+                        "threshold": 70,
+                        "reason": "submitted",
+                        "order_submitted": True,
+                        "policy_min_rr": 1.2,
+                        "max_notional_usd": 25.0,
+                        "risk_pct_multiplier": 0.5,
+                        "cooldown_minutes": 60.0,
+                        "max_hold_minutes": 120.0,
+                    },
+                )
+            )
+            self.assertTrue(
+                journal.record(
+                    "ALT_STRATEGY_EXECUTION",
+                    "WIFUSDT",
+                    {
+                        "strategy": "MEAN_REVERSION",
+                        "side": "SHORT",
+                        "reason": "strategy_cooldown",
+                        "order_submitted": False,
+                    },
+                )
+            )
+
+            entries, errors = load_jsonl(path)
+            summary = summarize_entries(entries)
+
+            self.assertEqual(errors, [])
+            self.assertEqual(summary["execution_total"], 2)
+            self.assertEqual(summary["execution_submitted_counts"]["MEAN_REVERSION"], 1)
+            self.assertEqual(summary["execution_rejected_counts"]["MEAN_REVERSION"], 1)
+            self.assertEqual(summary["execution_reason_counts"]["strategy_cooldown"], 1)
+            self.assertEqual(summary["recent_executions"][0]["risk_pct_multiplier"], 0.5)
+            self.assertEqual(summary["recent_executions"][0]["max_hold_minutes"], 120.0)
+
     def test_load_jsonl_reports_parse_errors(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "strategy.jsonl"

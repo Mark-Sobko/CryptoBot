@@ -103,8 +103,14 @@ breaker stops the process when equity falls through
 market observation without new order submission; active position management and
 read-only strategy telemetry still run. Significant alternative-strategy
 decisions are written to `logs/strategy_observations.jsonl`; summarize them with
-`scripts/summarize_strategy_journal.py`. `start.sh` uses the existing `.venv`,
+`scripts/summarize_strategy_journal.py`. The summary includes watch/conflict
+counts, alternative execution submit/reject counts by strategy, rejection
+reasons such as cooldown or policy blocks, and the active per-strategy execution
+policy fields recorded with each event. `start.sh` uses the existing `.venv`,
 defaults to demo mode, and does not restart the bot unless `MAX_RESTARTS` is set.
+Closed-trade stats also include a strategy-level table, so SMC and each
+alternative strategy can be compared by closed trades, PnL, win rate, and profit
+factor.
 
 `run_bybit_demo_lifecycle.py` fails closed unless `BYBIT_DEMO=true` or
 `BYBIT_TESTNET=true`. It covers safe create/amend/cancel, expected retCode
@@ -190,6 +196,14 @@ SQLite, audit, and Telegram path used by SMC. Strategy-specific targets are
 passed to the executor as TP overrides instead of using the default SMC TP
 ratio grid. If an alternative strategy submits an order for a symbol, the SMC
 path skips that symbol for the same scan cycle to avoid duplicate entries.
+Alternative execution also applies a separate policy per strategy before any
+order reaches the executor: `*_MIN_RR`, `*_MAX_NOTIONAL_USD`,
+`*_RISK_PCT_MULTIPLIER`, `*_ALLOWED_ORDER_TYPES`, and
+`*_COOLDOWN_MINUTES`, plus `*_MAX_HOLD_MINUTES` for the next strategy-specific
+position lifecycle layer. Defaults are intentionally conservative: all
+alternative strategies are limit-only, risk is scaled down from the active SMC
+risk setting, and repeated submissions for the same symbol/strategy are cooled
+down.
 
 CI and security checks:
 

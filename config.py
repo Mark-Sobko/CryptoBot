@@ -129,6 +129,78 @@ MULTI_STRATEGY_EXECUTION_NAMES: Final[List[str]] = [
     "VOLATILITY_EXPANSION",
 ]
 
+
+def _strategy_execution_policy(
+    strategy: str,
+    *,
+    min_rr: float,
+    max_notional_usd: float,
+    risk_pct_multiplier: float,
+    allowed_order_types: List[str],
+    cooldown_minutes: float,
+    max_hold_minutes: float,
+) -> Dict[str, Any]:
+    return {
+        "min_rr": _env_float(f"{strategy}_MIN_RR", min_rr),
+        "max_notional_usd": _env_float(f"{strategy}_MAX_NOTIONAL_USD", max_notional_usd),
+        "risk_pct_multiplier": _env_float(
+            f"{strategy}_RISK_PCT_MULTIPLIER",
+            risk_pct_multiplier,
+        ),
+        "allowed_order_types": _env_csv(
+            f"{strategy}_ALLOWED_ORDER_TYPES",
+            allowed_order_types,
+        ),
+        "cooldown_minutes": _env_float(
+            f"{strategy}_COOLDOWN_MINUTES",
+            cooldown_minutes,
+        ),
+        "max_hold_minutes": _env_float(
+            f"{strategy}_MAX_HOLD_MINUTES",
+            max_hold_minutes,
+        ),
+    }
+
+
+MULTI_STRATEGY_EXECUTION_POLICY: Final[Dict[str, Dict[str, Any]]] = {
+    "MEAN_REVERSION": _strategy_execution_policy(
+        "MEAN_REVERSION",
+        min_rr=1.2,
+        max_notional_usd=25.0,
+        risk_pct_multiplier=0.5,
+        allowed_order_types=["LIMIT"],
+        cooldown_minutes=60.0,
+        max_hold_minutes=120.0,
+    ),
+    "BREAKOUT": _strategy_execution_policy(
+        "BREAKOUT",
+        min_rr=1.4,
+        max_notional_usd=20.0,
+        risk_pct_multiplier=0.5,
+        allowed_order_types=["LIMIT"],
+        cooldown_minutes=90.0,
+        max_hold_minutes=240.0,
+    ),
+    "TREND_PULLBACK": _strategy_execution_policy(
+        "TREND_PULLBACK",
+        min_rr=1.4,
+        max_notional_usd=25.0,
+        risk_pct_multiplier=0.75,
+        allowed_order_types=["LIMIT"],
+        cooldown_minutes=60.0,
+        max_hold_minutes=360.0,
+    ),
+    "VOLATILITY_EXPANSION": _strategy_execution_policy(
+        "VOLATILITY_EXPANSION",
+        min_rr=1.5,
+        max_notional_usd=15.0,
+        risk_pct_multiplier=0.5,
+        allowed_order_types=["LIMIT"],
+        cooldown_minutes=45.0,
+        max_hold_minutes=90.0,
+    ),
+}
+
 # --- [RISK MANAGEMENT] ---
 class RiskConfig(TypedDict):
     risk_per_trade_pct: float
@@ -173,6 +245,7 @@ RISK_MANAGEMENT: Final[Dict[str, Any]] = {
             "MULTI_STRATEGY_ALLOWED_STRATEGIES",
             MULTI_STRATEGY_EXECUTION_NAMES,
         ),
+        "multi_strategy_execution_policy": MULTI_STRATEGY_EXECUTION_POLICY,
         "strategy_observation_journal": _env_bool("STRATEGY_OBSERVATION_JOURNAL", True),
         "leverage": 10,
         "margin_type": "ISOLATED",
@@ -335,6 +408,54 @@ def _validate_config() -> None:
     if unknown_strategies:
         joined = ",".join(sorted(unknown_strategies))
         raise ValueError(f"[CONFIG CRITICAL] unknown multi-strategy names: {joined}")
+
+    strategy_policy = global_cfg.get("multi_strategy_execution_policy", {})
+    if not isinstance(strategy_policy, dict):
+        raise ValueError("[CONFIG CRITICAL] multi_strategy_execution_policy must be a dict.")
+
+    for strategy in MULTI_STRATEGY_EXECUTION_NAMES:
+        policy = strategy_policy.get(strategy)
+        if not isinstance(policy, dict):
+            raise ValueError(f"[CONFIG CRITICAL] missing execution policy for {strategy}.")
+
+        policy_min_rr = float(policy.get("min_rr", multi_strategy_min_rr))
+        if not (0 < policy_min_rr <= 20):
+            raise ValueError(f"[CONFIG CRITICAL] {strategy}_MIN_RR must be in (0, 20].")
+
+        policy_max_notional = float(policy.get("max_notional_usd", 0.0))
+        if policy_max_notional < 0:
+            raise ValueError(f"[CONFIG CRITICAL] {strategy}_MAX_NOTIONAL_USD must be >= 0.")
+
+        risk_pct_multiplier = float(policy.get("risk_pct_multiplier", 1.0))
+        if not (0 < risk_pct_multiplier <= 1):
+            raise ValueError(
+                f"[CONFIG CRITICAL] {strategy}_RISK_PCT_MULTIPLIER must be in (0, 1]."
+            )
+
+        cooldown_minutes = float(policy.get("cooldown_minutes", 0.0))
+        if cooldown_minutes < 0:
+            raise ValueError(f"[CONFIG CRITICAL] {strategy}_COOLDOWN_MINUTES must be >= 0.")
+
+        max_hold_minutes = float(policy.get("max_hold_minutes", 0.0))
+        if max_hold_minutes < 0:
+            raise ValueError(f"[CONFIG CRITICAL] {strategy}_MAX_HOLD_MINUTES must be >= 0.")
+
+        allowed_order_types = policy.get("allowed_order_types", [])
+        if not isinstance(allowed_order_types, list) or not allowed_order_types:
+            raise ValueError(
+                f"[CONFIG CRITICAL] {strategy}_ALLOWED_ORDER_TYPES must be a non-empty list."
+            )
+
+        unknown_order_types = {
+            str(order_type).strip().upper()
+            for order_type in allowed_order_types
+            if str(order_type).strip()
+        }.difference({"LIMIT", "MARKET"})
+        if unknown_order_types:
+            joined = ",".join(sorted(unknown_order_types))
+            raise ValueError(
+                f"[CONFIG CRITICAL] unknown order type(s) for {strategy}: {joined}"
+            )
 
 # Запускаем проверку при импорте модуля
 _validate_config()
