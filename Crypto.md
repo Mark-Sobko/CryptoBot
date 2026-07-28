@@ -76,21 +76,30 @@ python3 scripts/run_paper_lifecycle.py --db /tmp/cryptobot_paper_partial_lifecyc
 .venv/bin/python scripts/run_bybit_demo_lifecycle.py --partial-fill-probe-only --max-notional 25 --wait 8 --partial-fill-dynamic-candidates 10 --partial-fill-max-scan 250 --partial-fill-target-notional-pct 0.95 --partial-fill-price-levels 5 --partial-fill-orderbook-depth 50 --partial-fill-poll-interval 0.1
 ```
 
-Guarded `main.py` demo launch:
+Guarded `main.py` launch profiles:
 
 ```bash
-# Full main.py observation without new order submission:
-EXECUTION_ENABLED=false MULTI_STRATEGY_READ_ONLY=true BYBIT_DEMO=true BYBIT_TESTNET=false .venv/bin/python main.py
+# Preflight only, no main.py runtime:
+.venv/bin/python scripts/preflight_main.py --profile demo-smc
 
-# Guarded SMC-only demo trading with runtime/order caps:
-BYBIT_DEMO=true BYBIT_TESTNET=false .venv/bin/python main.py
+# Dry-run shows the exact env/log/lock without starting main.py:
+.venv/bin/python scripts/run_main_profile.py --profile demo-smc --dry-run
+
+# Full observation, no order submission:
+.venv/bin/python scripts/run_main_profile.py --profile observe --runtime-minutes 30
+
+# Guarded SMC-only demo trading:
+.venv/bin/python scripts/run_main_profile.py --profile demo-smc --runtime-minutes 30 --max-order-notional 25
 
 # Guarded SMC + selected alternative-strategy demo trading:
-BYBIT_DEMO=true BYBIT_TESTNET=false EXECUTION_ENABLED=true \
-MULTI_STRATEGY_READ_ONLY=true MULTI_STRATEGY_EXECUTION_ENABLED=true \
-MULTI_STRATEGY_ALLOWED_STRATEGIES=MEAN_REVERSION,BREAKOUT,TREND_PULLBACK,VOLATILITY_EXPANSION \
-MAX_RUNTIME_MINUTES=30 MAX_ORDERS_PER_RUN=1 MAX_ORDERS_PER_CYCLE=1 MAX_ORDER_NOTIONAL_USD=25 \
-.venv/bin/python main.py
+.venv/bin/python scripts/run_main_profile.py --profile demo-multi --runtime-minutes 30 --max-order-notional 25
+
+# Optional account-state preflight before launch:
+.venv/bin/python scripts/run_main_profile.py --profile demo-multi --exchange-preflight --dry-run
+
+# start.sh delegates to the same launch profiles:
+BOT_PROFILE=demo-smc ./start.sh
+BOT_PROFILE=demo-multi ./start.sh
 ```
 
 `main.py` refuses live trading unless
@@ -101,13 +110,19 @@ active position management remains enabled during the run. The global drawdown
 breaker stops the process when equity falls through
 `max_drawdown_limit_pct`. Set `EXECUTION_ENABLED=false` for full `main.py`
 market observation without new order submission; active position management and
-read-only strategy telemetry still run. Significant alternative-strategy
-decisions are written to `logs/strategy_observations.jsonl`; summarize them with
+read-only strategy telemetry still run. `scripts/run_main_profile.py` applies
+one explicit launch profile, runs preflight before `main.py`, prevents duplicate
+local launches with `data/main.pid`, and writes the exact runtime log path as
+`logs/main_<profile>_<UTC timestamp>.log`. Add `--exchange-preflight` when the
+launch should also verify Bybit balance, active positions, and pending entry
+orders before starting. Significant alternative-strategy decisions are written to
+`logs/strategy_observations.jsonl`; summarize them with
 `scripts/summarize_strategy_journal.py`. The summary includes watch/conflict
 counts, alternative execution submit/reject counts by strategy, rejection
 reasons such as cooldown or policy blocks, and the active per-strategy execution
 policy fields recorded with each event. `start.sh` uses the existing `.venv`,
-defaults to demo mode, and does not restart the bot unless `MAX_RESTARTS` is set.
+defaults to `BOT_PROFILE=demo-smc`, and does not restart the bot unless
+`MAX_RESTARTS` is set.
 Closed-trade stats also include a strategy-level table, so SMC and each
 alternative strategy can be compared by closed trades, PnL, win rate, and profit
 factor.

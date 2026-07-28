@@ -31,6 +31,7 @@ echo "--- ENVIRONMENT READY. LAUNCHING BOT ---" | tee -a $LOG_FILE
 # 5. Безопасные значения запуска: demo by default, no infinite restart by default
 export BYBIT_DEMO="${BYBIT_DEMO:-true}"
 export BYBIT_TESTNET="${BYBIT_TESTNET:-false}"
+BOT_PROFILE="${BOT_PROFILE:-demo-smc}"
 
 if [ "$BYBIT_DEMO" != "true" ] && [ "$BYBIT_TESTNET" != "true" ] && [ "${ALLOW_LIVE_TRADING:-false}" != "true" ]; then
     echo "[ERROR] Refusing live mode. Set BYBIT_DEMO=true or BYBIT_TESTNET=true." | tee -a $LOG_FILE
@@ -41,9 +42,9 @@ MAX_RESTARTS="${MAX_RESTARTS:-0}"
 restart_count=0
 
 while true; do
-    echo "[$(date)] Bot is running..." | tee -a $LOG_FILE
+    echo "[$(date)] Bot is running with profile: $BOT_PROFILE" | tee -a $LOG_FILE
     set +e
-    python3 main.py >> bot_runtime.log 2>&1
+    python3 scripts/run_main_profile.py --profile "$BOT_PROFILE"
     status=$?
     set -e
 

@@ -23,6 +23,7 @@ data/*.db-*
 data/*.sqlite*
 data/*.json
 data/*.jsonl
+data/*.pid
 
 # OS / cloud metadata
 .DS_Store
