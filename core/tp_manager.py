@@ -26,13 +26,56 @@ class TPManager:
         self.retry_attempts = int(global_cfg.get("retry_attempts", 3))
         self.request_delay = 0.3
 
-    def _api_call(self, func, *args, **kwargs) -> Optional[Dict[str, Any]]:
+    @staticmethod
+    def _ret_code_as_int(value: Any) -> Optional[int]:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _is_accepted_noop(
+        cls,
+        *,
+        ret_code: Any = None,
+        message: str = "",
+        ok_ret_codes: Optional[set[int]] = None,
+        ok_messages: Optional[Tuple[str, ...]] = None,
+    ) -> bool:
+        accepted_codes = ok_ret_codes or set()
+        accepted_messages = ok_messages or ()
+
+        code = cls._ret_code_as_int(ret_code)
+        if code is not None and code in accepted_codes:
+            return True
+
+        lowered = str(message).lower()
+        return any(marker.lower() in lowered for marker in accepted_messages)
+
+    def _api_call(
+        self,
+        func,
+        *args,
+        ok_ret_codes: Optional[set[int]] = None,
+        ok_messages: Optional[Tuple[str, ...]] = None,
+        **kwargs,
+    ) -> Optional[Dict[str, Any]]:
         for attempt in range(1, self.retry_attempts + 1):
             try:
                 res = func(*args, **kwargs)
 
-                if isinstance(res, dict) and res.get("retCode") == 0:
-                    return res
+                if isinstance(res, dict):
+                    if res.get("retCode") == 0:
+                        return res
+
+                    if self._is_accepted_noop(
+                        ret_code=res.get("retCode"),
+                        message=str(res.get("retMsg", "")),
+                        ok_ret_codes=ok_ret_codes,
+                        ok_messages=ok_messages,
+                    ):
+                        self.logger.debug(f"[BYBIT API] TP noop accepted: {res}")
+                        return res
 
                 self.logger.warning(
                     f"⚠️ [BYBIT API] TP request failed "
@@ -40,6 +83,14 @@ class TPManager:
                 )
 
             except Exception as e:
+                if self._is_accepted_noop(
+                    message=str(e),
+                    ok_ret_codes=ok_ret_codes,
+                    ok_messages=ok_messages,
+                ):
+                    self.logger.debug(f"[BYBIT API] TP noop accepted: {e}")
+                    return {"retCode": 34040, "retMsg": str(e), "result": {}}
+
                 self.logger.warning(
                     f"⚠️ [BYBIT API EXCEPTION] TP request "
                     f"{attempt}/{self.retry_attempts}: {e}"
@@ -193,6 +244,8 @@ class TPManager:
             # Снимаем встроенный системный TP (если он был поставлен при входе)
             self._api_call(
                 self.session.set_trading_stop,
+                ok_ret_codes={34040},
+                ok_messages=("not modified",),
                 category=self.CATEGORY,
                 symbol=symbol,
                 takeProfit="0", 

@@ -216,6 +216,30 @@ class ExecutionSafetyTests(unittest.TestCase):
 
         self.assertEqual(session.cancelled, ["tp-1"])
 
+    def test_tp_cleanup_treats_bybit_not_modified_clear_as_noop(self):
+        from core.tp_manager import TPManager
+
+        class FakeSession:
+            def __init__(self):
+                self.clear_attempts = 0
+                self.open_orders_called = False
+
+            def set_trading_stop(self, **kwargs):
+                self.clear_attempts += 1
+                raise RuntimeError("not modified (ErrCode: 34040)")
+
+            def get_open_orders(self, **kwargs):
+                self.open_orders_called = True
+                return {"retCode": 0, "result": {"list": []}}
+
+        session = FakeSession()
+        manager = TPManager(session=session, instruments=None)
+        manager.request_delay = 0
+        manager._cancel_existing_tps("ETHUSDT", position_idx=2)
+
+        self.assertEqual(session.clear_attempts, 1)
+        self.assertTrue(session.open_orders_called)
+
     def test_tp_split_preserves_normalized_total_qty(self):
         from core.tp_manager import TPManager
 
