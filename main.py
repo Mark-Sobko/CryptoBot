@@ -819,6 +819,95 @@ class InstitutionalBot:
             )
 
     @staticmethod
+    def _summary_float(value: Any, digits: int = 4) -> Optional[float]:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(numeric):
+            return None
+        return round(numeric, digits)
+
+    @classmethod
+    def _build_regime_summary_fields(
+        cls,
+        strategy_result: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        metrics = strategy_result.get("metrics")
+        if not isinstance(metrics, dict):
+            metrics = {}
+        setup = strategy_result.get("setup")
+        if not isinstance(setup, dict):
+            setup = {}
+
+        regime = str(strategy_result.get("regime", "") or "")
+        native_strategy_by_regime = {
+            "RANGE": "mean_reversion",
+            "LOW_VOL_COMPRESSION": "breakout",
+            "TRENDING": "trend_pullback",
+            "CHOP": "volatility_expansion",
+        }
+        native_strategy = native_strategy_by_regime.get(regime)
+        strategy_states: list[Dict[str, Any]] = []
+        for key in ("mean_reversion", "breakout", "trend_pullback", "volatility_expansion"):
+            result = strategy_result.get(key)
+            if not isinstance(result, dict):
+                continue
+            status = str(result.get("status", "") or "")
+            if key != native_strategy and status == "DISABLED":
+                continue
+            failed_checks = result.get("failed_checks")
+            if not isinstance(failed_checks, list):
+                failed_checks = []
+            strategy_states.append(
+                {
+                    "strategy": result.get("strategy", key.upper()),
+                    "status": status,
+                    "reason": result.get("reason"),
+                    "failed_checks": failed_checks[:4],
+                    "score": result.get("score"),
+                    "threshold": result.get("threshold"),
+                }
+            )
+
+        return {
+            "regime": regime,
+            "regime_confidence": strategy_result.get("confidence"),
+            "trade_posture": strategy_result.get("trade_posture"),
+            "regime_reason": strategy_result.get("reason"),
+            "setup_status": setup.get("status"),
+            "setup_side": setup.get("side"),
+            "setup_reason": setup.get("reason"),
+            "range_position": cls._summary_float(metrics.get("range_position"), 4),
+            "range_width_pct": cls._summary_float(metrics.get("range_width_pct"), 4),
+            "adx": cls._summary_float(metrics.get("adx"), 2),
+            "atr_pct": cls._summary_float(metrics.get("atr_pct"), 4),
+            "relative_volume": cls._summary_float(metrics.get("relative_volume"), 4),
+            "strategy_states": strategy_states,
+        }
+
+    @staticmethod
+    def _decision_blockers(decision: Dict[str, Any]) -> list[str]:
+        blockers: list[str] = []
+        rejected_candidates = decision.get("rejected_candidates")
+        if not isinstance(rejected_candidates, list):
+            return blockers
+
+        for candidate in rejected_candidates[:4]:
+            if not isinstance(candidate, dict):
+                continue
+            strategy = str(candidate.get("strategy", "strategy"))
+            reason = str(
+                candidate.get("coordinator_rejection")
+                or candidate.get("reason")
+                or candidate.get("status")
+                or ""
+            )
+            if reason:
+                blockers.append(f"{strategy}:{reason}")
+        return blockers
+
+    @staticmethod
     def _build_read_only_strategy_summary(
         symbol: str,
         strategy_result: Optional[Dict[str, Any]],
@@ -833,30 +922,63 @@ class InstitutionalBot:
             return None
 
         action = decision.get("decision")
+        regime_fields = InstitutionalBot._build_regime_summary_fields(strategy_result)
+        blockers = InstitutionalBot._decision_blockers(decision)
+
         if action == DECISION_WATCH_ONLY:
+            plan = decision.get("plan") if isinstance(decision.get("plan"), dict) else {}
             return {
+                **regime_fields,
                 "symbol": symbol,
                 "status": "ALT_WATCH",
                 "side": decision.get("side"),
                 "score": decision.get("score"),
                 "reason": f"{decision.get('selected_strategy')} read-only candidate",
+                "selected_strategy": decision.get("selected_strategy"),
+                "blockers": blockers,
+                "plan": plan,
                 "rel_vol": rel_vol,
             }
 
         if action == DECISION_CONFLICT:
             strategies = ",".join(str(item) for item in decision.get("candidate_strategies", []))
             return {
+                **regime_fields,
                 "symbol": symbol,
                 "status": "ALT_CONFLICT",
                 "reason": f"read-only conflict:{strategies}",
+                "candidate_strategies": decision.get("candidate_strategies", []),
+                "candidate_sides": decision.get("candidate_sides", []),
+                "blockers": blockers,
                 "rel_vol": rel_vol,
             }
 
         if action == DECISION_NO_ACTION and int(decision.get("rejected_candidate_count", 0) or 0) > 0:
             return {
+                **regime_fields,
                 "symbol": symbol,
                 "status": "ALT_REJECT",
                 "reason": "read-only candidate rejected by coordinator",
+                "blockers": blockers,
+                "rel_vol": rel_vol,
+            }
+
+        if action == DECISION_NO_ACTION and regime_fields.get("regime") in {
+            "RANGE",
+            "LOW_VOL_COMPRESSION",
+            "CHOP",
+        }:
+            reason = (
+                regime_fields.get("setup_reason")
+                or regime_fields.get("regime_reason")
+                or decision.get("reason")
+                or "no_strategy_candidate"
+            )
+            return {
+                **regime_fields,
+                "symbol": symbol,
+                "status": "ALT_REGIME",
+                "reason": reason,
                 "rel_vol": rel_vol,
             }
 

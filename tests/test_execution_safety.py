@@ -1408,6 +1408,50 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertEqual(conflict_summary["status"], "ALT_CONFLICT")
         self.assertEqual(rejected_summary["status"], "ALT_REJECT")
 
+    def test_main_read_only_strategy_summary_reports_range_regime_context(self):
+        InstitutionalBot = self._import_institutional_bot()
+
+        summary = InstitutionalBot._build_read_only_strategy_summary(
+            "WIFUSDT",
+            {
+                "regime": "RANGE",
+                "confidence": 71,
+                "reason": "bounded_range_with_repeated_edges",
+                "trade_posture": "EDGE_ONLY",
+                "metrics": {
+                    "range_position": 0.52,
+                    "range_width_pct": 2.41,
+                    "relative_volume": 0.68,
+                    "adx": 16.2,
+                },
+                "setup": {
+                    "status": "RANGE_MID_NO_TRADE",
+                    "reason": "price_not_at_range_edge",
+                    "range_position": 0.52,
+                },
+                "mean_reversion": {
+                    "strategy": "MEAN_REVERSION",
+                    "status": "DISABLED",
+                    "reason": "not_at_range_edge",
+                    "failed_checks": ["range_edge"],
+                    "score": 0,
+                    "threshold": 70,
+                },
+                "decision": {
+                    "decision": "NO_ACTION",
+                    "reason": "no_strategy_candidate",
+                    "rejected_candidate_count": 0,
+                },
+            },
+            rel_vol=0.68,
+        )
+
+        self.assertEqual(summary["status"], "ALT_REGIME")
+        self.assertEqual(summary["regime"], "RANGE")
+        self.assertEqual(summary["setup_status"], "RANGE_MID_NO_TRADE")
+        self.assertEqual(summary["range_position"], 0.52)
+        self.assertEqual(summary["strategy_states"][0]["reason"], "not_at_range_edge")
+
     def test_market_summary_reports_alt_watch_separately(self):
         from core.notifier import TelegramNotifier
 
@@ -1433,6 +1477,39 @@ class ExecutionSafetyTests(unittest.TestCase):
         message = notifier.send_message.call_args.args[0]
         self.assertIn("READ-ONLY ALT WATCH", message)
         self.assertNotIn("FILTERED OUT", message)
+
+    def test_market_summary_reports_regime_map_for_sideways_context(self):
+        from core.notifier import TelegramNotifier
+
+        notifier = TelegramNotifier.__new__(TelegramNotifier)
+        notifier.alerts = {"entry": True}
+        notifier.SAFE_LIMIT = 3900
+        notifier.send_message = mock.Mock()
+
+        notifier.notify_market_summary(
+            [
+                {
+                    "symbol": "WIFUSDT",
+                    "status": "ALT_REGIME",
+                    "regime": "RANGE",
+                    "regime_confidence": 71,
+                    "trade_posture": "EDGE_ONLY",
+                    "setup_status": "RANGE_MID_NO_TRADE",
+                    "setup_reason": "price_not_at_range_edge",
+                    "range_position": 0.52,
+                    "range_width_pct": 2.41,
+                    "relative_volume": 0.68,
+                    "reason": "price_not_at_range_edge",
+                }
+            ],
+            equity=1000.0,
+        )
+
+        message = notifier.send_message.call_args.args[0]
+        self.assertIn("REGIME MAP", message)
+        self.assertIn("RANGE_MID_NO_TRADE", message)
+        self.assertIn("pos=0.52", message)
+        self.assertIn("price_not_at_range_edge", message)
 
     def test_market_summary_reports_alt_executed_separately(self):
         from core.notifier import TelegramNotifier

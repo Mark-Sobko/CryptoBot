@@ -2,6 +2,7 @@ import html
 import logging
 import datetime
 import time
+from collections import Counter
 from typing import Optional, Dict, List, Any
 
 import requests
@@ -51,6 +52,55 @@ class TelegramNotifier:
 
     def _alert_enabled(self, name: str, default: bool = True) -> bool:
         return bool(self.alerts.get(name, default))
+
+    @staticmethod
+    def _fmt_number(value: Any, digits: int = 2, suffix: str = "") -> str:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return ""
+        return f"{numeric:.{digits}f}{suffix}"
+
+    def _format_regime_line(self, item: Dict[str, Any]) -> str:
+        symbol = self._e(str(item.get("symbol", "")).replace("USDT", ""))
+        regime = self._e(item.get("regime", "UNKNOWN"))
+        confidence = self._fmt_number(item.get("regime_confidence"), 0, "%")
+        setup_status = self._e(item.get("setup_status") or item.get("trade_posture") or "")
+        setup_side = self._e(item.get("setup_side") or item.get("side") or "")
+        reason = self._e(
+            item.get("reason")
+            or item.get("setup_reason")
+            or item.get("regime_reason")
+            or "no_action"
+        )
+        range_pos = self._fmt_number(item.get("range_position"), 2)
+        range_width = self._fmt_number(item.get("range_width_pct"), 2, "%")
+        rel_vol = self._fmt_number(item.get("relative_volume", item.get("rel_vol")), 2, "x")
+
+        parts = [f"• <b>#{symbol}</b>: <code>{regime}</code>"]
+        if confidence:
+            parts.append(confidence)
+        if setup_status:
+            parts.append(f"setup=<code>{setup_status}</code>")
+        if setup_side:
+            parts.append(f"side=<code>{setup_side}</code>")
+
+        metrics = []
+        if range_pos:
+            metrics.append(f"pos={range_pos}")
+        if range_width:
+            metrics.append(f"width={range_width}")
+        if rel_vol:
+            metrics.append(f"vol={rel_vol}")
+        if metrics:
+            parts.append("(" + ", ".join(metrics) + ")")
+
+        blockers = item.get("blockers")
+        if isinstance(blockers, list) and blockers:
+            reason = self._e(", ".join(str(blocker) for blocker in blockers[:3]))
+
+        parts.append(f"— {reason}")
+        return " ".join(parts)
 
     def _trim(self, text: str) -> str:
         if len(text) <= self.SAFE_LIMIT:
@@ -208,12 +258,20 @@ class TelegramNotifier:
         active_signals = []
         alt_executed = []
         alt_watches = []
+        alt_waits = []
+        regime_lines = []
+        regime_counts: Counter[str] = Counter()
         rejected_coins = []
         flat_coins = []
 
         for item in summary_list:
             symbol = self._e(str(item.get("symbol", "")).replace("USDT", ""))
             status = str(item.get("status", "UNKNOWN"))
+            regime = str(item.get("regime", "") or "")
+            if regime:
+                regime_counts[regime] += 1
+                if status in {"ALT_REGIME", "ALT_REJECT", "ALT_CONFLICT", "ALT_WATCH"}:
+                    regime_lines.append(self._format_regime_line(item))
 
             if status == "SIGNAL":
                 active_signals.append(
@@ -227,11 +285,29 @@ class TelegramNotifier:
                     f"(Score: {self._e(item.get('score', 0))})"
                 )
             elif status == "ALT_WATCH":
+                plan = item.get("plan") if isinstance(item.get("plan"), dict) else {}
+                rr = self._fmt_number(plan.get("rr"), 2)
+                rr_text = f" | R:R <code>{rr}</code>" if rr else ""
                 alt_watches.append(
                     f"• <b>#{symbol}</b>: {self._e(item.get('side', ''))} "
                     f"{self._e(item.get('reason', 'read-only candidate'))} "
-                    f"(Score: {self._e(item.get('score', 0))})"
+                    f"(Score: {self._e(item.get('score', 0))}){rr_text}"
                 )
+            elif status == "ALT_CONFLICT":
+                alt_waits.append(
+                    f"• <b>#{symbol}</b>: conflict "
+                    f"{self._e(item.get('reason', 'strategy conflict'))}"
+                )
+            elif status == "ALT_REJECT":
+                blockers = item.get("blockers")
+                details = (
+                    ", ".join(str(blocker) for blocker in blockers[:3])
+                    if isinstance(blockers, list) and blockers
+                    else str(item.get("reason", "candidate rejected"))
+                )
+                alt_waits.append(f"• <b>#{symbol}</b>: {self._e(details)}")
+            elif status == "ALT_REGIME":
+                continue
             elif status == "FLAT":
                 flat_coins.append(f"<code>{symbol}</code>")
             else:
@@ -264,6 +340,28 @@ class TelegramNotifier:
 
             if len(alt_watches) > 10:
                 msg += f"\n...and {len(alt_watches) - 10} more."
+
+            msg += "\n\n"
+
+        if regime_counts:
+            counts_text = ", ".join(
+                f"<code>{self._e(regime)}</code>: <b>{count}</b>"
+                for regime, count in regime_counts.most_common()
+            )
+            msg += "<b>🧩 REGIME MAP:</b>\n" + counts_text + "\n"
+            if regime_lines:
+                shown = regime_lines[:12]
+                msg += "\n" + "\n".join(shown)
+                if len(regime_lines) > 12:
+                    msg += f"\n...and {len(regime_lines) - 12} more regime notes."
+            msg += "\n\n"
+
+        if alt_waits:
+            shown = alt_waits[:10]
+            msg += "<b>⏳ ALT STRATEGY WAIT / REJECT:</b>\n" + "\n".join(shown)
+
+            if len(alt_waits) > 10:
+                msg += f"\n...and {len(alt_waits) - 10} more."
 
             msg += "\n\n"
 
