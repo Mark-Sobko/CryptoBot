@@ -430,10 +430,56 @@ class TradeDatabase:
         self.conn.commit()
 
         if cursor.rowcount <= 0:
-            return False
+            return self._adopt_exchange_open_trade(
+                symbol=symbol,
+                side=side,
+                entry_price=entry_price,
+                qty=qty,
+                stop_loss=stop_loss,
+            )
 
         self.logger.info(f"💾 DATABASE | OPEN reconciled | {symbol}")
         return True
+
+    def _adopt_exchange_open_trade(
+        self,
+        symbol: str,
+        side: Optional[str],
+        entry_price: Optional[float],
+        qty: Optional[float],
+        stop_loss: Optional[float],
+    ) -> bool:
+        """Create an OPEN row for an exchange-visible position not created by this process."""
+        try:
+            if not symbol or not side:
+                return False
+            if entry_price is None or float(entry_price) <= 0:
+                return False
+            if qty is None or float(qty) <= 0:
+                return False
+
+            trade_id = self.add_trade(
+                {
+                    "symbol": symbol,
+                    "side": side,
+                    "entry_price": float(entry_price),
+                    "qty": float(qty),
+                    "sl": float(stop_loss or 0.0),
+                    "score": 0,
+                    "poi_type": "EXCHANGE_SYNC",
+                    "strategy": "EXCHANGE_SYNC",
+                    "source": "EXCHANGE_SYNC",
+                    "status": "OPEN",
+                }
+            )
+            if not trade_id:
+                return False
+
+            self.logger.info(f"💾 DATABASE | EXCHANGE position adopted | {symbol}")
+            return True
+        except Exception as e:
+            self.logger.error(f"❌ DB exchange adoption failed for {symbol}: {e}", exc_info=True)
+            return False
 
     def mark_trade_cancelled(
         self,

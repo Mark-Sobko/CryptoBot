@@ -202,10 +202,13 @@ def run_preflight(
     env: dict[str, str],
     *,
     exchange_check: bool = False,
+    repair_exchange_state: bool = False,
 ) -> None:
     command = [python_bin, "scripts/preflight_main.py", "--profile", profile]
     if exchange_check:
         command.append("--exchange")
+    if repair_exchange_state:
+        command.append("--repair-exchange-state")
     subprocess.run(command, cwd=root, env=env, check=True)
 
 
@@ -254,8 +257,19 @@ def main() -> int:
         action="store_true",
         help="Include Bybit balance/position/order checks in preflight.",
     )
+    parser.add_argument(
+        "--repair-exchange-state",
+        action="store_true",
+        help=(
+            "Requires --exchange-preflight. Repairs demo/testnet exchange state before "
+            "launch by setting emergency SL on unprotected positions and cancelling "
+            "pending entry orders above the notional cap."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+    if args.repair_exchange_state and not args.exchange_preflight:
+        parser.error("--repair-exchange-state requires --exchange-preflight")
 
     root = repo_root()
     python_bin = args.python or default_python(root)
@@ -278,6 +292,7 @@ def main() -> int:
         "log_file": str(log_path),
         "lock_file": str(lock_path),
         "exchange_preflight": bool(args.exchange_preflight),
+        "repair_exchange_state": bool(args.repair_exchange_state),
         "env": {
             key: env.get(key)
             for key in [
@@ -309,6 +324,7 @@ def main() -> int:
             args.profile,
             env,
             exchange_check=args.exchange_preflight,
+            repair_exchange_state=args.repair_exchange_state,
         )
 
     with pid_lock(lock_path):

@@ -297,10 +297,13 @@ class ExchangeManager:
                 symbol = str(pos.get("symbol", ""))
                 side = self._normalize_position_side(str(pos.get("side", "")))
                 active_keys_on_exchange.add((symbol, side))
+                entry_price = float(pos.get("entry_price", pos.get("entryPrice", 0.0)) or 0.0)
+                if entry_price <= 0:
+                    entry_price = float(pos.get("mark_price", pos.get("markPrice", 0.0)) or 0.0)
                 db_instance.mark_trade_open(
                     symbol=symbol,
                     side=side,
-                    entry_price=float(pos.get("entry_price", pos.get("entryPrice", 0.0)) or 0.0),
+                    entry_price=entry_price,
                     qty=float(pos.get("size", 0.0) or 0.0),
                     stop_loss=float(pos.get("stop_loss", pos.get("stopLoss", 0.0)) or 0.0),
                 )

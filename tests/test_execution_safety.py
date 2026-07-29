@@ -350,6 +350,69 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertEqual(db.closed[0]["symbol"], "BTCUSDT")
         self.assertEqual(db.closed[0]["status"], "CLOSED_UNVERIFIED")
 
+    def test_exchange_sync_uses_mark_price_when_entry_price_is_missing(self):
+        self._install_fake_exchange_deps()
+
+        from core.exchange import ExchangeManager
+
+        class FakeDB:
+            def __init__(self):
+                self.opened = []
+
+            def mark_trade_open(self, **kwargs):
+                self.opened.append(kwargs)
+                return True
+
+            def get_open_positions(self):
+                return []
+
+            def get_pending_orders(self):
+                return []
+
+        manager = ExchangeManager.__new__(ExchangeManager)
+        manager.retry_attempts = 1
+        manager.logger = logging.getLogger("test.ExchangeManager")
+        manager.session = types.SimpleNamespace()
+        manager.get_active_positions = lambda: [
+            {
+                "symbol": "INJUSDT",
+                "side": "Sell",
+                "size": 109.3,
+                "entry_price": 0.0,
+                "mark_price": 4.6285,
+                "stop_loss": 4.72,
+            }
+        ]
+
+        db = FakeDB()
+        manager.sync_db_with_exchange(db)
+
+        self.assertEqual(db.opened[0]["entry_price"], 4.6285)
+        self.assertEqual(db.opened[0]["side"], "SHORT")
+
+    def test_database_adopts_exchange_visible_open_position(self):
+        from core.database import TradeDatabase
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = TradeDatabase(os.path.join(tmpdir, "bot_memory.db"))
+
+            adopted = db.mark_trade_open(
+                symbol="INJUSDT",
+                side="SHORT",
+                entry_price=4.6285,
+                qty=109.3,
+                stop_loss=4.72,
+            )
+            trade = db.get_open_trade("INJUSDT", "SHORT")
+
+            self.assertTrue(adopted)
+            self.assertIsNotNone(trade)
+            self.assertEqual(trade["strategy"], "EXCHANGE_SYNC")
+            self.assertEqual(trade["source"], "EXCHANGE_SYNC")
+            self.assertEqual(trade["status"], "OPEN")
+            self.assertAlmostEqual(trade["entry_price"], 4.6285)
+            db.close()
+
     def test_unverified_close_is_excluded_from_pnl_stats(self):
         from core.database import TradeDatabase
 
@@ -493,6 +556,32 @@ class ExecutionSafetyTests(unittest.TestCase):
 
         self.assertTrue(manager.position_cache["BTCUSDT"]["tps_placed"])
         self.assertEqual(manager.tp_manager.placed[0]["total_qty"], 0.95)
+
+    def test_position_manager_uses_mark_price_for_missing_entry_emergency_stop(self):
+        from core.position_manager import PositionManager
+
+        class FakeInstruments:
+            def get(self, symbol):
+                return True
+
+        manager = PositionManager.__new__(PositionManager)
+        manager.logger = logging.getLogger("test.PositionManager")
+        manager.instruments = FakeInstruments()
+        manager.set_emergency_stop = mock.Mock()
+
+        manager.manage_position(
+            {
+                "symbol": "ETHUSDT",
+                "side": "Sell",
+                "size": 0.58,
+                "entryPrice": 0.0,
+                "markPrice": 1919.43,
+                "stopLoss": 0.0,
+                "positionIdx": 2,
+            }
+        )
+
+        manager.set_emergency_stop.assert_called_once_with("ETHUSDT", "SHORT", 1919.43, 2)
 
     def test_position_manager_places_tps_for_partial_fill_visible_qty(self):
         from core.position_manager import PositionManager

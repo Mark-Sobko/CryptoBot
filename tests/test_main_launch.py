@@ -171,6 +171,80 @@ class MainLaunchProfileTests(unittest.TestCase):
                 result["errors"],
             )
 
+    def test_exchange_preflight_can_repair_unsafe_demo_state(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._fake_config(
+                tmpdir,
+                demo=True,
+                testnet=False,
+                execution_enabled=True,
+                multi_strategy_execution_enabled=True,
+            )
+
+            class FakeExchange:
+                CATEGORY = "linear"
+
+                def __init__(self):
+                    self.session = self
+                    self.stop_set = False
+                    self.cancelled = False
+
+                def get_total_balance(self):
+                    return 1000.0
+
+                def get_ticker_info(self, symbol):
+                    return {"tickSize": 0.0001}
+
+                def get_active_positions(self):
+                    return [
+                        {
+                            "symbol": "INJUSDT",
+                            "side": "Sell",
+                            "positionIdx": 2,
+                            "entryPrice": 0,
+                            "markPrice": 4.6285,
+                            "stopLoss": 4.7211 if self.stop_set else 0,
+                        }
+                    ]
+
+                def get_pending_entry_orders(self):
+                    if self.cancelled:
+                        return []
+                    return [
+                        {
+                            "symbol": "XRPUSDT",
+                            "orderId": "large-order",
+                            "leavesValue": "275.8137",
+                        }
+                    ]
+
+                def _request_with_retry(self, func, **kwargs):
+                    return func(**kwargs)
+
+                def set_trading_stop(self, **kwargs):
+                    self.stop_set = True
+                    return {"retCode": 0, "result": kwargs}
+
+                def cancel_order(self, **kwargs):
+                    self.cancelled = True
+                    return {"retCode": 0, "result": kwargs}
+
+            exchange_module = types.ModuleType("core.exchange")
+            exchange_module.ExchangeManager = FakeExchange
+
+            with patch.dict(
+                sys.modules,
+                {"config": cfg, "core.exchange": exchange_module},
+            ), patch.dict(os.environ, {"PREFLIGHT_REPAIR_EXCHANGE_STATE": "true"}):
+                result = run_preflight(profile="demo-multi", exchange_check=True)
+
+            self.assertEqual(result["status"], "OK")
+            self.assertEqual(result["errors"], [])
+            self.assertEqual(len(result["exchange"]["repair_actions"]), 2)
+            self.assertTrue(
+                all(action["status"] == "OK" for action in result["exchange"]["repair_actions"])
+            )
+
     def test_launcher_preflight_can_request_exchange_check(self):
         calls: list[list[str]] = []
 
@@ -187,6 +261,34 @@ class MainLaunchProfileTests(unittest.TestCase):
             )
 
         self.assertEqual(calls[0], ["/python", "scripts/preflight_main.py", "--profile", "demo-smc", "--exchange"])
+
+    def test_launcher_preflight_can_request_exchange_repair(self):
+        calls: list[list[str]] = []
+
+        def fake_run(command, cwd, env, check):
+            calls.append(command)
+
+        with patch("scripts.run_main_profile.subprocess.run", side_effect=fake_run):
+            run_launcher_preflight(
+                Path("/repo"),
+                "/python",
+                "demo-multi",
+                {},
+                exchange_check=True,
+                repair_exchange_state=True,
+            )
+
+        self.assertEqual(
+            calls[0],
+            [
+                "/python",
+                "scripts/preflight_main.py",
+                "--profile",
+                "demo-multi",
+                "--exchange",
+                "--repair-exchange-state",
+            ],
+        )
 
     def _fake_config(
         self,

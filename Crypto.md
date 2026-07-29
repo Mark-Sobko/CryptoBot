@@ -97,6 +97,9 @@ Guarded `main.py` launch profiles:
 # Optional account-state preflight before launch, without starting main.py:
 .venv/bin/python scripts/preflight_main.py --profile demo-multi --exchange
 
+# Repair demo/testnet exchange state, then launch without a time limit:
+.venv/bin/python scripts/run_main_profile.py --profile demo-multi --runtime-minutes 0 --max-order-notional 25 --max-orders-per-run 0 --max-orders-per-cycle 1 --exchange-preflight --repair-exchange-state
+
 # start.sh delegates to the same launch profiles:
 BOT_PROFILE=demo-smc ./start.sh
 BOT_PROFILE=demo-multi ./start.sh
@@ -115,7 +118,10 @@ one explicit launch profile, runs preflight before `main.py`, prevents duplicate
 local launches with `data/main.pid`, and writes the exact runtime log path as
 `logs/main_<profile>_<UTC timestamp>.log`. Add `--exchange-preflight` when the
 launch should also verify Bybit balance, active positions, and pending entry
-orders before starting. Alternative-strategy execution starts with conservative
+orders before starting. Add `--repair-exchange-state` with exchange preflight on
+demo/testnet when the launch should first set emergency stop losses on existing
+positions without SL and cancel pending entry orders whose notional exceeds the
+configured cap. Alternative-strategy execution starts with conservative
 per-strategy notionals: 10 USDT for mean reversion, breakout, and volatility
 expansion, and 15 USDT for trend pullback. The multi-strategy health guard is
 enabled by default and blocks a strategy after one executor failure or three

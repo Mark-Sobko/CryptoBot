@@ -170,8 +170,11 @@ class PositionManager:
             current_price = float(pos.get("mark_price", pos.get("markPrice", entry_price)) or 0.0)
             current_sl = float(pos.get("stop_loss", pos.get("stopLoss", 0.0)) or 0.0)
 
-            if entry_price <= 0 or current_price <= 0:
+            if current_price <= 0:
                 return
+
+            if entry_price <= 0:
+                entry_price = current_price
 
             if not self.instruments.get(symbol):
                 return
