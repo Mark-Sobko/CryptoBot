@@ -105,6 +105,72 @@ class MainLaunchProfileTests(unittest.TestCase):
             self.assertEqual(result["status"], "FAILED")
             self.assertIn("live_mode_refused_without_ALLOW_LIVE_TRADING", result["errors"])
 
+    def test_exchange_preflight_blocks_unsafe_existing_exchange_state(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._fake_config(
+                tmpdir,
+                demo=True,
+                testnet=False,
+                execution_enabled=True,
+                multi_strategy_execution_enabled=True,
+            )
+
+            class FakeExchange:
+                def get_total_balance(self):
+                    return 1000.0
+
+                def get_active_positions(self):
+                    return [
+                        {
+                            "symbol": "INJUSDT",
+                            "side": "Sell",
+                            "positionIdx": 2,
+                            "stopLoss": 0,
+                        },
+                        {
+                            "symbol": "SEIUSDT",
+                            "side": "Sell",
+                            "positionIdx": 2,
+                            "stopLoss": 0.0447,
+                        },
+                    ]
+
+                def get_pending_entry_orders(self):
+                    return [
+                        {
+                            "symbol": "XRPUSDT",
+                            "orderId": "large-order",
+                            "leavesValue": "275.8137",
+                        },
+                        {
+                            "symbol": "WIFUSDT",
+                            "orderId": "small-order",
+                            "leavesValue": "14.7901",
+                        },
+                    ]
+
+            exchange_module = types.ModuleType("core.exchange")
+            exchange_module.ExchangeManager = FakeExchange
+
+            with patch.dict(sys.modules, {"config": cfg, "core.exchange": exchange_module}):
+                result = run_preflight(profile="demo-multi", exchange_check=True)
+
+            self.assertEqual(result["status"], "FAILED")
+            self.assertIn(
+                "active_position_without_stop_loss:INJUSDT:Sell:positionIdx=2",
+                result["errors"],
+            )
+            self.assertIn(
+                "pending_entry_order_exceeds_max_notional:"
+                "XRPUSDT:large-order:275.8137>25.0000",
+                result["errors"],
+            )
+            self.assertNotIn(
+                "pending_entry_order_exceeds_max_notional:"
+                "WIFUSDT:small-order:14.7901>25.0000",
+                result["errors"],
+            )
+
     def test_launcher_preflight_can_request_exchange_check(self):
         calls: list[list[str]] = []
 

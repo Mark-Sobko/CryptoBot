@@ -64,6 +64,62 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
     return numeric if math.isfinite(numeric) else default
 
 
+def _position_has_stop(position: dict[str, Any]) -> bool:
+    return _safe_float(
+        position.get("stop_loss", position.get("stopLoss")),
+        0.0,
+    ) > 0
+
+
+def _order_notional(order: dict[str, Any]) -> float:
+    for key in ("leavesValue", "cumExecValue", "orderValue"):
+        value = _safe_float(order.get(key), 0.0)
+        if value > 0:
+            return value
+
+    qty = _safe_float(order.get("leavesQty", order.get("qty")), 0.0)
+    price = _safe_float(order.get("price", order.get("lastPriceOnCreated")), 0.0)
+    return qty * price if qty > 0 and price > 0 else 0.0
+
+
+def _exchange_safety_errors(
+    *,
+    active_positions: list[dict[str, Any]],
+    pending_entry_orders: list[dict[str, Any]],
+    max_order_notional_usd: float,
+    execution_enabled: bool,
+) -> list[str]:
+    if not execution_enabled:
+        return []
+
+    errors: list[str] = []
+
+    for position in active_positions:
+        if _position_has_stop(position):
+            continue
+        symbol = str(position.get("symbol", "UNKNOWN") or "UNKNOWN")
+        side = str(position.get("side", "") or "")
+        position_idx = str(position.get("positionIdx", "") or "")
+        errors.append(
+            f"active_position_without_stop_loss:{symbol}:{side}:positionIdx={position_idx}"
+        )
+
+    if max_order_notional_usd > 0:
+        for order in pending_entry_orders:
+            notional = _order_notional(order)
+            if notional <= max_order_notional_usd:
+                continue
+
+            symbol = str(order.get("symbol", "UNKNOWN") or "UNKNOWN")
+            order_id = str(order.get("orderId", "") or "")
+            errors.append(
+                "pending_entry_order_exceeds_max_notional:"
+                f"{symbol}:{order_id}:{notional:.4f}>{max_order_notional_usd:.4f}"
+            )
+
+    return errors
+
+
 def run_preflight(*, profile: str = "", exchange_check: bool = False) -> dict[str, Any]:
     errors: list[str] = []
     warnings: list[str] = []
@@ -131,11 +187,23 @@ def run_preflight(*, profile: str = "", exchange_check: bool = False) -> dict[st
             from core.exchange import ExchangeManager
 
             ex = ExchangeManager()
+            active_positions = ex.get_active_positions()
+            pending_entry_orders = ex.get_pending_entry_orders()
+            if pending_entry_orders is None:
+                pending_entry_orders = []
             exchange = {
                 "total_balance": ex.get_total_balance(),
-                "active_positions": ex.get_active_positions(),
-                "pending_entry_orders": ex.get_pending_entry_orders(),
+                "active_positions": active_positions,
+                "pending_entry_orders": pending_entry_orders,
             }
+            errors.extend(
+                _exchange_safety_errors(
+                    active_positions=active_positions,
+                    pending_entry_orders=pending_entry_orders,
+                    max_order_notional_usd=max_order_notional_usd,
+                    execution_enabled=execution_enabled,
+                )
+            )
         except Exception as exc:
             errors.append(f"exchange_check_failed:{type(exc).__name__}:{exc}")
 
