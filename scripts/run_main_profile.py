@@ -24,6 +24,10 @@ PROFILE_DEFAULTS: dict[str, dict[str, str]] = {
         "MAX_ORDERS_PER_RUN": "1",
         "MAX_ORDERS_PER_CYCLE": "1",
         "MAX_ORDER_NOTIONAL_USD": "25",
+        "MULTI_STRATEGY_HEALTH_GUARD_ENABLED": "true",
+        "MULTI_STRATEGY_HEALTH_WINDOW_MINUTES": "240",
+        "MULTI_STRATEGY_HEALTH_MAX_REJECTIONS": "3",
+        "MULTI_STRATEGY_HEALTH_MAX_EXECUTOR_FAILURES": "1",
     },
     "demo-smc": {
         "BYBIT_DEMO": "true",
@@ -35,6 +39,10 @@ PROFILE_DEFAULTS: dict[str, dict[str, str]] = {
         "MAX_ORDERS_PER_RUN": "1",
         "MAX_ORDERS_PER_CYCLE": "1",
         "MAX_ORDER_NOTIONAL_USD": "25",
+        "MULTI_STRATEGY_HEALTH_GUARD_ENABLED": "true",
+        "MULTI_STRATEGY_HEALTH_WINDOW_MINUTES": "240",
+        "MULTI_STRATEGY_HEALTH_MAX_REJECTIONS": "3",
+        "MULTI_STRATEGY_HEALTH_MAX_EXECUTOR_FAILURES": "1",
     },
     "demo-multi": {
         "BYBIT_DEMO": "true",
@@ -46,6 +54,10 @@ PROFILE_DEFAULTS: dict[str, dict[str, str]] = {
         "MAX_ORDERS_PER_RUN": "1",
         "MAX_ORDERS_PER_CYCLE": "1",
         "MAX_ORDER_NOTIONAL_USD": "25",
+        "MULTI_STRATEGY_HEALTH_GUARD_ENABLED": "true",
+        "MULTI_STRATEGY_HEALTH_WINDOW_MINUTES": "240",
+        "MULTI_STRATEGY_HEALTH_MAX_REJECTIONS": "3",
+        "MULTI_STRATEGY_HEALTH_MAX_EXECUTOR_FAILURES": "1",
     },
     "testnet-smc": {
         "BYBIT_DEMO": "false",
@@ -57,6 +69,10 @@ PROFILE_DEFAULTS: dict[str, dict[str, str]] = {
         "MAX_ORDERS_PER_RUN": "1",
         "MAX_ORDERS_PER_CYCLE": "1",
         "MAX_ORDER_NOTIONAL_USD": "25",
+        "MULTI_STRATEGY_HEALTH_GUARD_ENABLED": "true",
+        "MULTI_STRATEGY_HEALTH_WINDOW_MINUTES": "240",
+        "MULTI_STRATEGY_HEALTH_MAX_REJECTIONS": "3",
+        "MULTI_STRATEGY_HEALTH_MAX_EXECUTOR_FAILURES": "1",
     },
     "testnet-multi": {
         "BYBIT_DEMO": "false",
@@ -68,6 +84,10 @@ PROFILE_DEFAULTS: dict[str, dict[str, str]] = {
         "MAX_ORDERS_PER_RUN": "1",
         "MAX_ORDERS_PER_CYCLE": "1",
         "MAX_ORDER_NOTIONAL_USD": "25",
+        "MULTI_STRATEGY_HEALTH_GUARD_ENABLED": "true",
+        "MULTI_STRATEGY_HEALTH_WINDOW_MINUTES": "240",
+        "MULTI_STRATEGY_HEALTH_MAX_REJECTIONS": "3",
+        "MULTI_STRATEGY_HEALTH_MAX_EXECUTOR_FAILURES": "1",
     },
 }
 
@@ -270,6 +290,10 @@ def main() -> int:
                 "MAX_ORDERS_PER_RUN",
                 "MAX_ORDERS_PER_CYCLE",
                 "MAX_ORDER_NOTIONAL_USD",
+                "MULTI_STRATEGY_HEALTH_GUARD_ENABLED",
+                "MULTI_STRATEGY_HEALTH_WINDOW_MINUTES",
+                "MULTI_STRATEGY_HEALTH_MAX_REJECTIONS",
+                "MULTI_STRATEGY_HEALTH_MAX_EXECUTOR_FAILURES",
             ]
         },
     }

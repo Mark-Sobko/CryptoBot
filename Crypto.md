@@ -115,7 +115,12 @@ one explicit launch profile, runs preflight before `main.py`, prevents duplicate
 local launches with `data/main.pid`, and writes the exact runtime log path as
 `logs/main_<profile>_<UTC timestamp>.log`. Add `--exchange-preflight` when the
 launch should also verify Bybit balance, active positions, and pending entry
-orders before starting. Significant alternative-strategy decisions are written to
+orders before starting. Alternative-strategy execution starts with conservative
+per-strategy notionals: 10 USDT for mean reversion, breakout, and volatility
+expansion, and 15 USDT for trend pullback. The multi-strategy health guard is
+enabled by default and blocks a strategy after one executor failure or three
+consecutive unhealthy execution rejections within a 240 minute window.
+Significant alternative-strategy decisions are written to
 `logs/strategy_observations.jsonl`; summarize them with
 `scripts/summarize_strategy_journal.py`. The summary includes watch/conflict
 counts, alternative execution submit/reject counts by strategy, rejection

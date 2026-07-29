@@ -165,8 +165,8 @@ def _strategy_execution_policy(
 MULTI_STRATEGY_EXECUTION_POLICY: Final[Dict[str, Dict[str, Any]]] = {
     "MEAN_REVERSION": _strategy_execution_policy(
         "MEAN_REVERSION",
-        min_rr=1.2,
-        max_notional_usd=25.0,
+        min_rr=1.3,
+        max_notional_usd=10.0,
         risk_pct_multiplier=0.5,
         allowed_order_types=["LIMIT"],
         cooldown_minutes=60.0,
@@ -175,7 +175,7 @@ MULTI_STRATEGY_EXECUTION_POLICY: Final[Dict[str, Dict[str, Any]]] = {
     "BREAKOUT": _strategy_execution_policy(
         "BREAKOUT",
         min_rr=1.4,
-        max_notional_usd=20.0,
+        max_notional_usd=10.0,
         risk_pct_multiplier=0.5,
         allowed_order_types=["LIMIT"],
         cooldown_minutes=90.0,
@@ -184,7 +184,7 @@ MULTI_STRATEGY_EXECUTION_POLICY: Final[Dict[str, Dict[str, Any]]] = {
     "TREND_PULLBACK": _strategy_execution_policy(
         "TREND_PULLBACK",
         min_rr=1.4,
-        max_notional_usd=25.0,
+        max_notional_usd=15.0,
         risk_pct_multiplier=0.75,
         allowed_order_types=["LIMIT"],
         cooldown_minutes=60.0,
@@ -193,7 +193,7 @@ MULTI_STRATEGY_EXECUTION_POLICY: Final[Dict[str, Dict[str, Any]]] = {
     "VOLATILITY_EXPANSION": _strategy_execution_policy(
         "VOLATILITY_EXPANSION",
         min_rr=1.5,
-        max_notional_usd=15.0,
+        max_notional_usd=10.0,
         risk_pct_multiplier=0.5,
         allowed_order_types=["LIMIT"],
         cooldown_minutes=45.0,
@@ -240,12 +240,16 @@ RISK_MANAGEMENT: Final[Dict[str, Any]] = {
         "require_liquidity_target": _env_bool("REQUIRE_LIQUIDITY_TARGET", True),
         "multi_strategy_read_only": _env_bool("MULTI_STRATEGY_READ_ONLY", True),
         "multi_strategy_execution_enabled": _env_bool("MULTI_STRATEGY_EXECUTION_ENABLED", False),
-        "multi_strategy_min_rr": _env_float("MULTI_STRATEGY_MIN_RR", 1.2),
+        "multi_strategy_min_rr": _env_float("MULTI_STRATEGY_MIN_RR", 1.3),
         "multi_strategy_allowed_strategies": _env_csv(
             "MULTI_STRATEGY_ALLOWED_STRATEGIES",
             MULTI_STRATEGY_EXECUTION_NAMES,
         ),
         "multi_strategy_execution_policy": MULTI_STRATEGY_EXECUTION_POLICY,
+        "multi_strategy_health_guard_enabled": _env_bool("MULTI_STRATEGY_HEALTH_GUARD_ENABLED", True),
+        "multi_strategy_health_window_minutes": _env_float("MULTI_STRATEGY_HEALTH_WINDOW_MINUTES", 240.0),
+        "multi_strategy_health_max_rejections": _env_int("MULTI_STRATEGY_HEALTH_MAX_REJECTIONS", 3),
+        "multi_strategy_health_max_executor_failures": _env_int("MULTI_STRATEGY_HEALTH_MAX_EXECUTOR_FAILURES", 1),
         "strategy_observation_journal": _env_bool("STRATEGY_OBSERVATION_JOURNAL", True),
         "leverage": 10,
         "margin_type": "ISOLATED",
@@ -366,6 +370,7 @@ def _validate_config() -> None:
         "require_liquidity_target",
         "multi_strategy_read_only",
         "multi_strategy_execution_enabled",
+        "multi_strategy_health_guard_enabled",
         "execution_enabled",
         "strategy_observation_journal",
     ]
@@ -378,6 +383,9 @@ def _validate_config() -> None:
         "max_orders_per_run",
         "max_orders_per_cycle",
         "max_order_notional_usd",
+        "multi_strategy_health_window_minutes",
+        "multi_strategy_health_max_rejections",
+        "multi_strategy_health_max_executor_failures",
     ]
     for key in non_negative_limits:
         value = float(global_cfg.get(key, 0))

@@ -154,6 +154,19 @@ def run_preflight(*, profile: str = "", exchange_check: bool = False) -> dict[st
             "max_orders_per_run": max_orders_per_run,
             "max_orders_per_cycle": max_orders_per_cycle,
             "max_order_notional_usd": max_order_notional_usd,
+            "multi_strategy_health_guard_enabled": bool(
+                global_cfg.get("multi_strategy_health_guard_enabled", True)
+            ),
+            "multi_strategy_health_window_minutes": _safe_float(
+                global_cfg.get("multi_strategy_health_window_minutes"),
+                0.0,
+            ),
+            "multi_strategy_health_max_rejections": int(
+                global_cfg.get("multi_strategy_health_max_rejections", 0) or 0
+            ),
+            "multi_strategy_health_max_executor_failures": int(
+                global_cfg.get("multi_strategy_health_max_executor_failures", 0) or 0
+            ),
         },
         "paths": {
             "db": str(config.DB_PATH),

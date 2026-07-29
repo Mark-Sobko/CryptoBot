@@ -103,6 +103,33 @@ class StrategyObservationJournalTests(unittest.TestCase):
             self.assertEqual(summary["recent_executions"][0]["risk_pct_multiplier"], 0.5)
             self.assertEqual(summary["recent_executions"][0]["max_hold_minutes"], 120.0)
 
+    def test_summary_reports_strategy_health_blocks(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "strategy.jsonl"
+            journal = StrategyObservationJournal(path)
+
+            self.assertTrue(
+                journal.record(
+                    "ALT_STRATEGY_EXECUTION",
+                    "WIFUSDT",
+                    {
+                        "strategy": "BREAKOUT",
+                        "reason": "strategy_health_guard:executor_failures",
+                        "order_submitted": False,
+                    },
+                )
+            )
+
+            entries, errors = load_jsonl(path)
+            summary = summarize_entries(entries)
+
+            self.assertEqual(errors, [])
+            self.assertEqual(summary["execution_health_block_counts"]["BREAKOUT"], 1)
+            self.assertEqual(
+                summary["execution_reason_counts"]["strategy_health_guard:executor_failures"],
+                1,
+            )
+
     def test_load_jsonl_reports_parse_errors(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "strategy.jsonl"

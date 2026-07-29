@@ -1046,6 +1046,41 @@ class ExecutionSafetyTests(unittest.TestCase):
         )
         self.assertEqual(bot.executor.execute_institutional_entry.call_count, 1)
 
+    def test_main_multi_strategy_health_guard_blocks_problem_strategy(self):
+        InstitutionalBot = self._import_institutional_bot()
+
+        bot = InstitutionalBot.__new__(InstitutionalBot)
+        bot.logger = logging.getLogger("test.InstitutionalBot")
+        bot.multi_strategy_execution_enabled = True
+        bot.multi_strategy_allowed_strategies = {"MEAN_REVERSION"}
+        bot.multi_strategy_min_rr = 1.2
+        bot.multi_strategy_health_guard_enabled = True
+        bot.multi_strategy_health_window_minutes = 240.0
+        bot.multi_strategy_health_max_rejections = 1
+        bot.multi_strategy_health_max_executor_failures = 0
+        bot.strategy_execution_health_events = [
+            {
+                "ts": datetime.datetime.now(datetime.timezone.utc),
+                "symbol": "WIFUSDT",
+                "strategy": "MEAN_REVERSION",
+                "order_submitted": False,
+                "reason": "zero_qty_after_notional_cap",
+            }
+        ]
+        bot.executor = mock.Mock()
+        bot.strategy_journal = mock.Mock()
+
+        result = bot._maybe_execute_read_only_strategy(
+            "WIFUSDT",
+            self._alt_strategy_result(),
+            {"max_open_trades": 1, "risk_per_trade_pct": 1.0},
+        )
+
+        self.assertIsNone(result)
+        bot.executor.execute_institutional_entry.assert_not_called()
+        _, _, payload = bot.strategy_journal.record.call_args.args
+        self.assertEqual(payload["reason"], "strategy_health_guard:rejection_streak")
+
     def test_main_multi_strategy_execution_respects_global_execution_guard(self):
         InstitutionalBot = self._import_institutional_bot()
 

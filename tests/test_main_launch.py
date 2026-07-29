@@ -31,6 +31,8 @@ class MainLaunchProfileTests(unittest.TestCase):
         self.assertEqual(demo_multi["MULTI_STRATEGY_EXECUTION_ENABLED"], "true")
         self.assertEqual(demo_multi["MAX_ORDERS_PER_RUN"], "1")
         self.assertEqual(demo_multi["MAX_ORDERS_PER_CYCLE"], "1")
+        self.assertEqual(demo_multi["MULTI_STRATEGY_HEALTH_GUARD_ENABLED"], "true")
+        self.assertEqual(demo_multi["MULTI_STRATEGY_HEALTH_MAX_REJECTIONS"], "3")
 
     def test_numeric_and_env_overrides_are_explicit(self):
         env = build_profile_env(
@@ -146,6 +148,10 @@ class MainLaunchProfileTests(unittest.TestCase):
                     "allow_live_trading": allow_live_trading,
                     "execution_enabled": execution_enabled,
                     "multi_strategy_execution_enabled": multi_strategy_execution_enabled,
+                    "multi_strategy_health_guard_enabled": True,
+                    "multi_strategy_health_window_minutes": 240,
+                    "multi_strategy_health_max_rejections": 3,
+                    "multi_strategy_health_max_executor_failures": 1,
                     "max_runtime_minutes": 30,
                     "max_orders_per_run": 1,
                     "max_orders_per_cycle": 1,

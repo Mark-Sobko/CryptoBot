@@ -80,6 +80,7 @@ def summarize_entries(entries: list[dict[str, Any]], *, top: int = 10) -> dict[s
     execution_submitted_counts: Counter[str] = Counter()
     execution_rejected_counts: Counter[str] = Counter()
     execution_reason_counts: Counter[str] = Counter()
+    execution_health_block_counts: Counter[str] = Counter()
 
     first_ts = ""
     last_ts = ""
@@ -125,6 +126,8 @@ def summarize_entries(entries: list[dict[str, Any]], *, top: int = 10) -> dict[s
                 execution_rejected_counts[execution_strategy] += 1
             if reason:
                 execution_reason_counts[reason] += 1
+                if reason.startswith("strategy_health_guard:"):
+                    execution_health_block_counts[execution_strategy] += 1
 
     return {
         "entries_total": len(entries),
@@ -143,6 +146,7 @@ def summarize_entries(entries: list[dict[str, Any]], *, top: int = 10) -> dict[s
         "execution_submitted_counts": _sorted_counter(execution_submitted_counts, top=top),
         "execution_rejected_counts": _sorted_counter(execution_rejected_counts, top=top),
         "execution_reason_counts": _sorted_counter(execution_reason_counts, top=top),
+        "execution_health_block_counts": _sorted_counter(execution_health_block_counts, top=top),
         "recent_watch": watch_entries[-top:],
         "recent_conflicts": conflict_entries[-top:],
         "recent_rejections": rejected_entries[-top:],

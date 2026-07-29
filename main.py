@@ -42,6 +42,7 @@ from engine.strategy_execution import (
     build_strategy_poi,
     parse_allowed_strategies,
 )
+from engine.strategy_health import HEALTH_BLOCKED, evaluate_strategy_execution_health
 
 
 class InstitutionalBot:
@@ -114,6 +115,18 @@ class InstitutionalBot:
             "multi_strategy_execution_policy",
             {},
         )
+        self.multi_strategy_health_guard_enabled = bool(
+            global_cfg.get("multi_strategy_health_guard_enabled", True)
+        )
+        self.multi_strategy_health_window_minutes = float(
+            global_cfg.get("multi_strategy_health_window_minutes", 240.0) or 0.0
+        )
+        self.multi_strategy_health_max_rejections = int(
+            global_cfg.get("multi_strategy_health_max_rejections", 3) or 0
+        )
+        self.multi_strategy_health_max_executor_failures = int(
+            global_cfg.get("multi_strategy_health_max_executor_failures", 1) or 0
+        )
         self.strategy_observation_journal_enabled = bool(
             global_cfg.get("strategy_observation_journal", True)
         )
@@ -121,6 +134,7 @@ class InstitutionalBot:
         self.orders_submitted_this_run = 0
         self.orders_submitted_this_cycle = 0
         self.strategy_execution_last_submit: Dict[tuple[str, str], datetime.datetime] = {}
+        self.strategy_execution_health_events: list[Dict[str, Any]] = []
 
     def _validate_runtime_environment(self) -> None:
         global_cfg = config.RISK_MANAGEMENT.get("global", {})
@@ -277,6 +291,66 @@ class InstitutionalBot:
             datetime.datetime.now(datetime.timezone.utc)
         )
 
+    def _record_strategy_execution_health_event(
+        self,
+        symbol: str,
+        strategy: str,
+        *,
+        order_submitted: bool,
+        reason: str,
+    ) -> None:
+        events = getattr(self, "strategy_execution_health_events", None)
+        if events is None:
+            self.strategy_execution_health_events = []
+            events = self.strategy_execution_health_events
+
+        events.append(
+            {
+                "ts": datetime.datetime.now(datetime.timezone.utc),
+                "symbol": str(symbol or "").upper(),
+                "strategy": str(strategy or "").upper(),
+                "order_submitted": bool(order_submitted),
+                "reason": str(reason or ""),
+            }
+        )
+
+        max_events = 500
+        if len(events) > max_events:
+            del events[: len(events) - max_events]
+
+    def _strategy_execution_health_allows(
+        self,
+        symbol: str,
+        strategy: str,
+    ) -> tuple[bool, str]:
+        if not bool(getattr(self, "multi_strategy_health_guard_enabled", True)):
+            return True, ""
+
+        health = evaluate_strategy_execution_health(
+            getattr(self, "strategy_execution_health_events", []),
+            strategy=strategy,
+            window_minutes=float(
+                getattr(self, "multi_strategy_health_window_minutes", 240.0) or 0.0
+            ),
+            max_recent_rejections=int(
+                getattr(self, "multi_strategy_health_max_rejections", 3) or 0
+            ),
+            max_executor_failures=int(
+                getattr(self, "multi_strategy_health_max_executor_failures", 1) or 0
+            ),
+        )
+        if health.get("status") != HEALTH_BLOCKED:
+            return True, ""
+
+        reason = str(health.get("reason", "strategy_health_guard"))
+        self.logger.warning(
+            f"🧯 [ALT HEALTH BLOCK] {symbol} | strategy={strategy} | "
+            f"reason={reason} | recent_events={health.get('recent_events')} | "
+            f"executor_failures={health.get('executor_failures')} | "
+            f"rejection_streak={health.get('consecutive_unhealthy_rejections')}"
+        )
+        return False, reason
+
     @staticmethod
     def _has_effective_liquidity_target(analysis: Dict[str, Any]) -> bool:
         if bool(analysis.get("has_liquidity_target", False)):
@@ -421,6 +495,12 @@ class InstitutionalBot:
     ) -> None:
         journal = getattr(self, "strategy_journal", None)
         if journal is None:
+            self._record_strategy_execution_health_event(
+                symbol,
+                str(execution_plan.get("strategy", "")),
+                order_submitted=order_submitted,
+                reason=reason,
+            )
             return
 
         payload = {
@@ -449,6 +529,12 @@ class InstitutionalBot:
             "cooldown_minutes": execution_plan.get("cooldown_minutes"),
             "max_hold_minutes": execution_plan.get("max_hold_minutes"),
         }
+        self._record_strategy_execution_health_event(
+            symbol,
+            str(execution_plan.get("strategy", "")),
+            order_submitted=order_submitted,
+            reason=reason,
+        )
         journal.record("ALT_STRATEGY_EXECUTION", symbol, payload)
 
     def _maybe_execute_read_only_strategy(
@@ -495,6 +581,19 @@ class InstitutionalBot:
         risk_pct_multiplier = float(execution_plan.get("risk_pct_multiplier", 1.0) or 1.0)
         cooldown_minutes = float(execution_plan.get("cooldown_minutes", 0.0) or 0.0)
         max_hold_minutes = float(execution_plan.get("max_hold_minutes", 0.0) or 0.0)
+
+        health_allows, health_reason = self._strategy_execution_health_allows(
+            execution_symbol,
+            strategy,
+        )
+        if not health_allows:
+            self._record_strategy_execution_observation(
+                execution_symbol,
+                execution_plan,
+                order_submitted=False,
+                reason=health_reason,
+            )
+            return None
 
         if not self._strategy_execution_cooldown_allows(
             execution_symbol,
